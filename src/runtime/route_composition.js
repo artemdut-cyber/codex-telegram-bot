@@ -38,6 +38,9 @@ export function registerRuntimeRoutes(r, { accounts, workspace } = {}) {
 
   registerForumContext(r);
   registerWorkspaceFlowBoundary(r);
+  r.bot.command("delivery", (ctx) => r.handleManualDelivery(
+    ctx, r.getChatKey(ctx), r.getCommandArgs(ctx)
+  ));
   if (r.config.codexAccountsDir) registerAccountCommands(r, accounts);
   const workspaceMenus = registerWorkspaceMenus(r, workspace);
   const chatCommandHandlers = registerChatCommands({

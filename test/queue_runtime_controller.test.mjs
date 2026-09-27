@@ -53,6 +53,20 @@ test("queue runtime persists enqueue, reorder, dequeue, and clear transitions", 
   assert.equal(fixture.saves(), 5);
 });
 
+test("failed final delivery remains visible without blocking later queued turns", async () => {
+  const state = { queues: {}, worker: { deliveries: {
+    "chat:old-job": { deliveryStatus: "delivery_failed", ambiguous: true }
+  } } };
+  const fixture = createFixture({ state });
+  await fixture.controller.enqueuePendingTurn("chat", {
+    id: "next", text: "next", inputText: "next", enqueuedAt: "2026-07-21T00:00:00.000Z"
+  });
+  assert.equal(fixture.controller.hasPendingFinalDelivery("chat"), false);
+  assert.equal(await fixture.controller.startQueueDrainIfIdle("chat"), true);
+  assert.equal(fixture.activeTurns.has("chat"), true);
+  assert.equal(state.worker.deliveries["chat:old-job"].deliveryStatus, "delivery_failed");
+});
+
 test("queue runtime hydrates persisted turns from its injected state", () => {
   const state = {
     queues: {

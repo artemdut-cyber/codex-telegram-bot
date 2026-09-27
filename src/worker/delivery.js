@@ -14,6 +14,7 @@ const PENDING_DELIVERY_STATUSES = new Set([
   "delivery_sending",
   "delivery_failed"
 ]);
+const BLOCKING_DELIVERY_STATUSES = new Set(["result_ready"]);
 
 export function workerDeliveryKey(chatKey, jobId) {
   return `${String(chatKey || "")}:${String(jobId || "")}`;
@@ -228,6 +229,16 @@ export function hasPendingWorkerDelivery(deliveries, chatKey) {
   for (const [key, rawEntry] of Object.entries(objectOrEmpty(deliveries))) {
     const entry = normalizeWorkerDeliveryEntry(key, rawEntry);
     if (entry?.chatKey === chatKey && PENDING_DELIVERY_STATUSES.has(entry.deliveryStatus)) return true;
+  }
+  return false;
+}
+
+// Ambiguous sends need manual review, but cannot auto-replay and must not hold
+// every later turn in the chat queue after a crash or send failure.
+export function hasBlockingWorkerDelivery(deliveries, chatKey) {
+  for (const [key, rawEntry] of Object.entries(objectOrEmpty(deliveries))) {
+    const entry = normalizeWorkerDeliveryEntry(key, rawEntry);
+    if (entry?.chatKey === chatKey && BLOCKING_DELIVERY_STATUSES.has(entry.deliveryStatus)) return true;
   }
   return false;
 }

@@ -50,6 +50,22 @@ export function createWorkerRuntimeRecoveryController({
     }
 
     const jobs = await readWorkerJobsForRecovery(deliveries, snapshots, importantJobIds, source);
+    // The outbox record is the authority after a final send failure. Its old
+    // active-turn snapshot must not resurrect an already completed Codex job.
+    for (const [key, rawEntry] of Object.entries(deliveries)) {
+      const entry = normalizeWorkerDeliveryEntry(key, rawEntry);
+      if ((entry?.deliveryStatus !== "delivery_failed" && entry?.deliveryStatus !== "delivery_sending")
+        || stateStore.activeTurns.has(entry.chatKey)
+        || String(snapshots[entry.chatKey]?.workerJobId || "") !== entry.jobId) continue;
+      await removeActiveTurnSnapshot(settings.recoveryDir, entry.chatKey);
+      delete snapshots[entry.chatKey];
+      await turn.appendRecoveryEvent({
+        type: "worker_delivery_snapshot_cleaned",
+        chatKey: entry.chatKey,
+        jobId: entry.jobId,
+        reason: entry.deliveryStatus
+      });
+    }
     await armWorkerRestartRecoveries(snapshots, jobs, source);
     const activeSnapshotJobIds = Object.values(snapshots)
       .map((snapshot) => String(snapshot?.workerJobId || ""))
@@ -448,7 +464,7 @@ export function createWorkerRuntimeRecoveryController({
         finalReaction === settings.completeReaction
       );
       stateStore.activeTurns.delete(chatKey);
-      if (deliveryCompleted) await queue.startDrain(chatKey, ctx);
+      if (deliveryCompleted || active.deliveryPending) await queue.startDrain(chatKey, ctx);
     }
   }
 

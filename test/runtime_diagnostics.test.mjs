@@ -91,7 +91,8 @@ test("pending delivery lines distinguish safe and uncertain recovery", () => {
   }), [
     textFor("en", "deliveryCodexExecutionCompleted"),
     "telegramDeliveryUncertain:1",
-    textFor("en", "telegramDeliveryManualReview")
+    textFor("en", "telegramDeliveryManualReview"),
+    "<code>/delivery</code>"
   ]);
 });
 

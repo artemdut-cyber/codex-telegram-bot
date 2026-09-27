@@ -105,7 +105,10 @@ export function createRuntimeDiagnosticsPresenter({
     return [
       localization.text("deliveryCodexExecutionCompleted"),
       localization.formatText(deliveryKey, { count: summary.count }),
-      localization.text(recoveryKey)
+      localization.text(recoveryKey),
+      ...(summary.recovery === "automatic_replay_disabled" || summary.recovery === "manual_review_required"
+        ? [code("/delivery")]
+        : [])
     ];
   }
 

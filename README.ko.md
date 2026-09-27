@@ -375,7 +375,7 @@ Telegram 메시지를 reply로 보내면, reply 대상 메시지의 text/caption
 
 Codex가 inbound Telegram 메시지를 처리하는 동안 같은 chat에 추가 plain text, photo, image-document 메시지가 들어오면 기본적으로 queue에 저장되고, active turn이 끝난 뒤 순서대로 처리됩니다. Queue는 `STATE_FILE`에 저장되므로 queued text와 다운로드한 image path는 bot restart 후에도 유지됩니다. `/status`와 `/queue`는 backlog를 표시합니다. `/queue`에는 pause/resume, queue mode, clear all, cancel one item, move an item up, run an item next inline button도 표시됩니다. 직접 명령어 `/queue_pause`, `/queue_resume`, `/cancelqueue`, `/cancelqueue <id|number>`도 계속 사용할 수 있습니다.
 
-Codex 실행은 완료됐지만 final Telegram reply가 pending이거나 전달 결과가 불확실하면 같은 chat의 새 메시지는 기존 영속 queue에 대기합니다. `/status`와 `/queue`는 Codex 실행과 final delivery를 구분하고, 안전한 재전송 가능 여부 또는 중복 방지를 위한 자동 재전송 비활성 상태를 표시합니다.
+Codex 실행은 완료됐지만 최종 Telegram 답변의 전달 결과가 불확실하면 실패 기록은 보존하고 같은 chat의 다음 요청은 계속 처리합니다. `/status`와 `/queue`는 Codex 실행과 최종 전달 상태를 구분합니다. `/delivery`로 불확실한 답변을 확인하고, 채팅에 이미 도착했는지 확인한 뒤 `/delivery resend JOB_ID`로 명시적으로 재전송할 수 있습니다. 저장된 worker 결과를 복원하고 해시를 검증하므로 Codex 작업을 다시 실행하지 않습니다. 기존 전송이 Telegram에 도착한 뒤 타임아웃됐다면 답변이 중복될 수 있습니다. 안전한 자동 재전송을 기다리는 결과는 복구가 실행될 때까지 queue를 보류합니다.
 
 `/queue_mode`는 Codex turn 실행 중 새 메시지가 어떻게 동작할지 정합니다.
 

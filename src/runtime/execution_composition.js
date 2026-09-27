@@ -2,6 +2,7 @@ import { createCodexRuntimeExecutor } from "../codex/runtime_executor.js";
 import { createTurnRuntimeController } from "../codex/turn_controller.js";
 import { createRuntimeRecoveryController } from "../recovery/runtime_controller.js";
 import { createTurnRecoveryJournal } from "../recovery/turn_journal.js";
+import { createManualDeliveryController } from "../recovery/manual_delivery.js";
 import { createLiveProgressController } from "../ui/live_progress.js";
 import { createWorkerRuntimeController } from "../worker/runtime_controller.js";
 import { accountThreadId } from "../accounts/context.js";
@@ -41,6 +42,17 @@ export function createExecutionComposition(r) {
       formatForLanguage: r.formatTextForLanguage
     },
     formatting: { redact: r.redactText, truncate: r.truncate }
+  });
+
+  const manualDelivery = createManualDeliveryController({
+    state: r.state,
+    activeTurns: r.activeTurns,
+    getWorkerClient: r.getWorkerClient,
+    journal,
+    telegram: { replyCodexAnswer: r.replyCodexAnswer, replyHtml: r.replyHtml },
+    startQueueDrain: r.startQueueDrainIfIdle,
+    formatTurn: progress.formatTurn,
+    text: r.text
   });
 
   const executor = createCodexRuntimeExecutor({
@@ -157,7 +169,8 @@ export function createExecutionComposition(r) {
       getPending: r.getPendingTurns,
       hasPendingFinalDelivery: r.hasPendingFinalDelivery,
       isPaused: r.isQueuePaused,
-      pruneExpired: r.pruneExpiredPendingTurns
+      pruneExpired: r.pruneExpiredPendingTurns,
+      startDrain: r.startQueueDrainIfIdle
     },
     lifecycle: {
       isRecoveryActive: r.isRecoveryActive,
@@ -294,6 +307,7 @@ export function createExecutionComposition(r) {
   return {
     cancelWorkerJobOnce: worker.cancelWorkerJobOnce,
     handleCodexMessage: turn.handleCodexMessage,
+    handleManualDelivery: manualDelivery.handle,
     handleProcessSignal: recoveryController.handleProcessSignal,
     handleRestartCommand: recoveryController.handleRestartCommand,
     markActiveTurnStopped: journal.markActiveTurnStopped,

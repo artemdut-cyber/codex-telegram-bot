@@ -73,6 +73,7 @@ export const REGISTERED_TELEGRAM_COMMANDS = new Set([
   "recovery_status",
   "recovery_resume",
   "recovery_cancel",
+  "delivery",
   "queue",
   "queue_pause",
   "queue_resume",

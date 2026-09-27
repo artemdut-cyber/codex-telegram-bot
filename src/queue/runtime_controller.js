@@ -10,7 +10,7 @@ import {
   serializePendingTurn
 } from "../queue.js";
 import { code } from "../telegram/html.js";
-import { hasPendingWorkerDelivery } from "../worker/delivery.js";
+import { hasBlockingWorkerDelivery } from "../worker/delivery.js";
 
 const VALID_QUEUE_MODES = new Set(["safe", "interrupt", "side"]);
 
@@ -144,7 +144,7 @@ export function createQueueRuntimeController({
   }
 
   function hasPendingFinalDelivery(chatKey) {
-    return hasPendingWorkerDelivery(state.worker?.deliveries, chatKey);
+    return hasBlockingWorkerDelivery(state.worker?.deliveries, chatKey);
   }
 
   function getQueueMode(chatKey) {

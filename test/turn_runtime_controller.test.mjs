@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { createTurnRuntimeController } from "../src/codex/turn_controller.js";
 
-function createHarness({ queueMode = "safe", workerEnabled = false, runTurnError = null, beforeTurn } = {}) {
+function createHarness({ queueMode = "safe", workerEnabled = false, runTurnError = null, replyError = null, beforeTurn } = {}) {
   const activeTurns = new Map();
   const pending = new Map();
   const calls = [];
@@ -47,7 +47,8 @@ function createHarness({ queueMode = "safe", workerEnabled = false, runTurnError
       getPending: (chatKey) => pending.get(chatKey) ?? [],
       hasPendingFinalDelivery: () => false,
       isPaused: () => false,
-      pruneExpired: record("prune")
+      pruneExpired: record("prune"),
+      startDrain: record("drain")
     },
     lifecycle: {
       isRecoveryActive: () => false,
@@ -108,6 +109,7 @@ function createHarness({ queueMode = "safe", workerEnabled = false, runTurnError
       reactQuietly: record("react"),
       replyCodexAnswer: async (_ctx, text) => {
         calls.push(["answer", text]);
+        if (replyError) throw replyError;
         return { message_id: 99 };
       },
       replyHtml: async (_ctx, html) => {
@@ -137,6 +139,18 @@ function createHarness({ queueMode = "safe", workerEnabled = false, runTurnError
   });
   return { activeTurns, calls, controller, ctx, pending, replies };
 }
+
+test("failed final send records uncertainty and releases the queue", async () => {
+  const error = Object.assign(new Error("timed out"), { code: "ETIMEDOUT" });
+  const { activeTurns, calls, controller, ctx } = createHarness({ workerEnabled: true, replyError: error });
+  const active = { stopRequested: false };
+  activeTurns.set("chat:42", active);
+  await controller.runPreparedTurnQueue("chat:42", { id: "turn", ctx, text: "work" }, active);
+  assert.equal(activeTurns.has("chat:42"), false);
+  assert.equal(active.deliveryPending, true);
+  assert.equal(calls.some(([name]) => name === "reply-failed"), true);
+  assert.equal(calls.some(([name]) => name === "drain"), true);
+});
 
 test("turn preparation merges reply context, images, routing, and expiry", async () => {
   const { controller, ctx } = createHarness();

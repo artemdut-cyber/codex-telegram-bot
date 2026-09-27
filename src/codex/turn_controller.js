@@ -306,6 +306,7 @@ export function createTurnRuntimeController({
     }
 
     activeTurns.delete(chatKey);
+    if (active.deliveryPending) await queue.startDrain?.(chatKey);
   }
 
   async function processPreparedTurn(chatKey, preparedTurn, active) {

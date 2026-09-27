@@ -438,10 +438,14 @@ pause/resume, queue mode, clear all, cancel one item, move an item up, or run an
 item next. The direct commands `/queue_pause`, `/queue_resume`, `/cancelqueue`,
 and `/cancelqueue <id|number>` remain available.
 
-If Codex has completed but its final Telegram reply is still pending or has an
-uncertain outcome, new messages for that chat stay in the same persisted queue.
-`/status` and `/queue` distinguish Codex execution from final delivery and show
-whether safe replay is available or automatic replay is disabled.
+If Codex has completed but its final Telegram reply has an uncertain outcome,
+the bot preserves the failed delivery record and continues later chat requests.
+`/status` and `/queue` distinguish Codex execution from final delivery. Use
+`/delivery` to inspect uncertain replies, then check the chat before explicitly
+running `/delivery resend JOB_ID`. This reconstructs the saved worker answer and
+verifies its digest without rerunning Codex. A duplicate is possible when the
+original Telegram send timed out after reaching the server. Results still
+waiting for safe automatic replay hold the queue until recovery runs.
 
 `/queue_mode` controls how new messages behave while a Codex turn is running:
 

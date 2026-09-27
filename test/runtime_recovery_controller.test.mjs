@@ -161,6 +161,28 @@ test("runtime recovery scheduler records worker health and empty startup plans",
   assert.equal(warnings.length, 1);
 });
 
+test("startup removes a failed delivery snapshot without replaying its completed job", async (t) => {
+  const harness = await createHarness(t, {
+    workerEnabled: true,
+    workerJob: { id: "job-1", chatKey: "chat-1", status: "completed", lastSeq: 2 }
+  });
+  harness.deliveries["chat-1:job-1"] = {
+    deliveryStatus: "delivery_failed", ambiguous: true,
+    responseDigest: "sha256:saved", updatedAt: new Date().toISOString()
+  };
+  await replaceActiveTurnSnapshot(harness.recoveryDir, "chat-1", {
+    chatId: "chat-1", workerJobId: "job-1", recoveryEligible: true,
+    threadId: "newer-thread", startedAt: new Date().toISOString()
+  });
+
+  assert.equal(await harness.controller.recoverActiveWorkerJobs({ source: "startup" }), 0);
+  assert.equal((await readActiveTurnSnapshots(harness.recoveryDir)).turns["chat-1"], undefined);
+  assert.equal(harness.deliveries["chat-1:job-1"].deliveryStatus, "delivery_failed");
+  assert.deepEqual(harness.answerReplies, []);
+  assert.equal(harness.events.some(({ type, reason }) =>
+    type === "worker_delivery_snapshot_cleaned" && reason === "delivery_failed"), true);
+});
+
 test("disabled runtime recovery does not initialize or schedule work", async (t) => {
   const { controller, events, recoveryDir } = await createHarness(t, { enabled: false });
   await fs.rm(recoveryDir, { recursive: true, force: true });

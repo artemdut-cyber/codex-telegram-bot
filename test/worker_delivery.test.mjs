@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   WORKER_DELIVERY_SCHEMA_VERSION,
   classifyWorkerDeliveryRecovery,
+  hasBlockingWorkerDelivery,
   hasPendingWorkerDelivery,
   isWorkerSnapshotResumeEligible,
   markWorkerDeliveryFailed,
@@ -328,6 +329,12 @@ test("pending delivery detection is chat-scoped", () => {
   };
   assert.equal(hasPendingWorkerDelivery(deliveries, "chat-1"), true);
   assert.equal(hasPendingWorkerDelivery(deliveries, "chat-2"), false);
+  assert.equal(hasBlockingWorkerDelivery(deliveries, "chat-1"), true);
+  deliveries["chat-1:job-1"].deliveryStatus = "delivery_sending";
+  assert.equal(hasBlockingWorkerDelivery(deliveries, "chat-1"), false);
+  deliveries["chat-1:job-1"].deliveryStatus = "delivery_failed";
+  assert.equal(hasPendingWorkerDelivery(deliveries, "chat-1"), true);
+  assert.equal(hasBlockingWorkerDelivery(deliveries, "chat-1"), false);
 });
 
 test("delivery status summary distinguishes safe pending from uncertain delivery", () => {

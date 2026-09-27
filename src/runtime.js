@@ -1153,6 +1153,7 @@ executionRuntime = createExecutionComposition({
 const {
   cancelWorkerJobOnce,
   handleCodexMessage,
+  handleManualDelivery,
   handleProcessSignal,
   handleRestartCommand,
   markActiveTurnStopped,
@@ -1223,6 +1224,7 @@ hydratePendingTurnsFromState();
   formatRecoveryStatusHtml,
   handleRestartCommand,
   markActiveTurnStopped,
+  handleManualDelivery,
   scheduleStartupRecovery,
   clearPendingTurns,
   formatQueueHtml,
