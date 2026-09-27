@@ -4,6 +4,17 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+## 1.3.8 - 2026-09-28
+
+- Ignore Codex's nonfatal unsupported-configuration notices in live progress
+  while continuing to show real task errors.
+- Keep chats moving after an uncertain Telegram final-reply timeout, without
+  re-running an already completed Codex turn.
+- Allow guarded removal of the bot's default account and show the authenticated
+  account in the usage panel.
+- Refresh Codex and npm dependencies, and stabilize CI and worker heartbeat
+  checks on the current Ubuntu image.
+
 ## 1.3.7 - 2026-09-16
 
 - Add Russian and complete all 1,255 translation keys in English, Korean,
