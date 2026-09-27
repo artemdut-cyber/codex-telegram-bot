@@ -196,6 +196,7 @@ export function createLiveProgressController({
         : activity(`web-running-${item.id}`, "liveWebRunning", language);
     }
     if (item.type === "error") {
+      if (isIgnoredConfigSettingWarning(item)) return null;
       return activity(`item-error-${item.id}`, "liveItemError", language, {}, true);
     }
     if (item.type === "agent_message" && event.type !== "item.completed") {
@@ -264,4 +265,8 @@ function hashString(value) {
 
 function isItemEvent(type) {
   return type === "item.started" || type === "item.updated" || type === "item.completed";
+}
+
+function isIgnoredConfigSettingWarning(item) {
+  return /^Codex is ignoring \d+ unrecognized configuration settings?\./.test(String(item.message || ""));
 }

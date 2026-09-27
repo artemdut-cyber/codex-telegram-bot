@@ -79,3 +79,23 @@ test("restored progress preserves always, on_success, and never deletion policie
     assert.equal(controller.shouldDeleteLiveProgress(state, false), onFailure);
   }
 });
+
+test("ignored config warnings do not appear as live errors before the turn starts", async () => {
+  const { controller, sent } = createFixture({ source: "activity" });
+  const state = controller.createLiveProgressState();
+  state.chatKey = "chat";
+  const warning = "Codex is ignoring 2 unrecognized configuration settings. Check for typos or deprecated settings.";
+
+  for (const id of ["item_0", "item_1"]) {
+    assert.equal(await controller.maybeSendLiveProgress({}, state, {
+      type: "item.completed", item: { id, type: "error", message: warning }
+    }, []), false);
+  }
+  assert.equal(await controller.maybeSendLiveProgress({}, state, { type: "turn.started" }, []), true);
+  assert.deepEqual(sent, [textFor("en", "liveTurnStarted")]);
+
+  assert.equal(await controller.maybeSendLiveProgress({}, state, {
+    type: "item.completed", item: { id: "real_error", type: "error", message: "Connection failed." }
+  }, []), true);
+  assert.equal(sent.at(-1), textFor("en", "liveItemError"));
+});
