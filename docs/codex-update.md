@@ -49,6 +49,10 @@ installation. The bot service's working directory must match the running repo.
    are saved before switching. Existing native auto-update eligibility is preserved. Required
    services restart, CLI version and worker connectivity are checked, and the
    running external app-server executable must match the target version.
+   After worker restart, a read-only status handshake retries transient socket
+   startup errors for up to thirty seconds before restarting the bot. A spawned
+   systemd process alone does not prove the socket is ready; permanent errors
+   still fail immediately and genuine startup failure triggers rollback.
 6. Verification failure restores the old links and services. After an interrupted
    switch, **Recover update** restores the persisted original selection rather
    than repeating uncertain activation. Preparation can resume if selection had

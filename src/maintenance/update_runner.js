@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { writePrivateFileAtomic } from "../fs/private.js";
 import { createWorkerClient } from "../worker/client.js";
+import { waitForWorkerReady } from "../worker/readiness.js";
 import { atomicSymlink, codexInstallation, runUpdateProcess, stageCodexRelease, versionFromOutput } from "./update_install.js";
 import { readUpdateState, releaseUpdate, updateLockPath, UPDATE_TERMINAL_PHASES, writeUpdateState } from "./update_state.js";
 
@@ -18,7 +19,8 @@ export async function runCodexUpdate(config, id, {
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   now = Date.now,
   idleTimeoutMs = 30 * 60_000,
-  stableIdleMs = 5000
+  stableIdleMs = 5000,
+  workerReadyTimeoutMs = 30_000
 } = {}) {
   let state = await readUpdateState(config);
   if (!state || state.id !== id) throw new Error("Update run does not own current status.");
@@ -45,6 +47,11 @@ export async function runCodexUpdate(config, id, {
   const restartServices = async () => {
     for (const unit of state.services.filter((item) => item !== config.codexUpdateBotService)) {
       await service("restart", unit);
+      if (unit === config.codexUpdateWorkerService && config.codexWorkerMode === "sidecar") {
+        await waitForWorkerReady({ status: workerStatus }, {
+          timeoutMs: workerReadyTimeoutMs, sleep, now
+        });
+      }
     }
     await service("restart", config.codexUpdateBotService);
     for (const unit of state.services) {

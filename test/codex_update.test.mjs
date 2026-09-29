@@ -50,7 +50,7 @@ async function fixture(t) {
   let time = 1000;
   const deps = {
     run, stage: async () => release,
-    workerStatus: async () => ({ activeJobs: workerBusy ? [{}] : [], runningJobIds: workerBusy ? ["job"] : [] }),
+    workerStatus: async () => ({ status: "ok", activeJobs: workerBusy ? [{}] : [], runningJobIds: workerBusy ? ["job"] : [] }),
     now: () => time, stableIdleMs: 1000, idleTimeoutMs: 4000,
     sleep: async () => {
       time += 1000;
@@ -139,6 +139,47 @@ test("successful update switches both links only after idle and verifies service
   assert.equal(updateAdmissionPaused(f.config), false);
   await assert.rejects(fs.access(updateLockPath(f.config)), { code: "ENOENT" });
   assert.equal((await runCodexUpdate(f.config, f.state.id, f.deps)).phase, "succeeded");
+});
+
+test("updater waits for a restarted worker socket before starting the bot or rolling back", async (t) => {
+  const f = await fixture(t);
+  await claimUpdate(f.config, f.state);
+  let checks = 0;
+  const result = await runCodexUpdate(f.config, f.state.id, {
+    ...f.deps,
+    workerStatus: async () => {
+      const restarted = f.calls.some(([cmd, , action, unit]) => cmd === "systemctl" && action === "restart" && unit === "worker.service");
+      if (restarted) {
+        checks += 1;
+        if (checks <= 2) {
+          assert.equal(f.calls.some(([cmd, , action, unit]) => cmd === "systemctl" && action === "restart" && unit === "bot.service"), false);
+          throw Object.assign(new Error("socket starting"), { code: checks === 1 ? "ENOENT" : "ECONNREFUSED" });
+        }
+      }
+      return { status: "ok", activeJobs: [], runningJobIds: [] };
+    }
+  });
+  assert.equal(result.phase, "succeeded");
+  assert.ok(checks >= 3);
+  assert.equal(result.error, undefined);
+});
+
+test("a worker that never becomes ready on the new release triggers a bounded rollback", async (t) => {
+  const f = await fixture(t);
+  await claimUpdate(f.config, f.state);
+  const result = await runCodexUpdate(f.config, f.state.id, {
+    ...f.deps, workerReadyTimeoutMs: 3000,
+    workerStatus: async () => {
+      if ((await readUpdateState(f.config)).phase === "verifying") {
+        throw Object.assign(new Error("new worker socket unavailable"), { code: "ENOENT" });
+      }
+      return { status: "ok", activeJobs: [], runningJobIds: [] };
+    }
+  });
+  assert.equal(result.phase, "rolled_back");
+  assert.match(result.error, /did not become ready within 3000ms/);
+  assert.equal(await fs.realpath(f.config.codexPath), f.state.installation.real);
+  assert.equal(updateAdmissionPaused(f.config), false);
 });
 
 test("busy worker timeout leaves jobs, services and original CLI untouched", async (t) => {

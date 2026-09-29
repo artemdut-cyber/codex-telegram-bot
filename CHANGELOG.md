@@ -4,6 +4,10 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+- Wait for the worker's status handshake after restart before restarting the
+  bot or declaring activation failed. Retry transient socket startup errors
+  within a bounded readiness window; retain failure handling for genuine errors.
+
 - Add a Codex Update button below report/backup in Tools → Codex Maintenance.
   Linux standalone updates use the official installer in isolated staging,
   wait for all jobs and final responses, preserve queued requests and user
