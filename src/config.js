@@ -15,6 +15,7 @@ import {
 import { resolveConfigPaths } from "./config/paths.js";
 import { readRecoveryConfig } from "./config/recovery.js";
 import { readRuntimeConfig } from "./config/runtime.js";
+import { readCodexUpdateConfig } from "./config/update.js";
 import {
   readTelegramAccessConfig,
   readTelegramPreferencesConfig,
@@ -38,6 +39,7 @@ export function readConfig(env = process.env, options = {}) {
     ...readCodexConfig(env, paths),
     ...readTelegramPreferencesConfig(env),
     ...readRuntimeConfig(env, paths),
+    ...readCodexUpdateConfig(env, paths, telegramAccess),
     ...readCodexMaintenanceConfig(env, paths),
     ...readRecoveryConfig(env, paths),
     ...readUploadConfig(env, paths),

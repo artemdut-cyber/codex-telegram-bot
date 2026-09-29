@@ -53,6 +53,22 @@ test("queue runtime persists enqueue, reorder, dequeue, and clear transitions", 
   assert.equal(fixture.saves(), 5);
 });
 
+test("update admission pause preserves queued turns and restores an admitted turn even when full", async () => {
+  let paused = true;
+  const fixture = createFixture({ settings: {
+    maxPendingTurns: () => 1, maxPendingAgeSeconds: () => 3600, admissionPaused: () => paused
+  } });
+  const turn = { id: "next", text: "next", enqueuedAt: "2026-07-21T00:00:00.000Z" };
+  await fixture.controller.enqueuePendingTurn("chat", turn);
+  assert.equal(await fixture.controller.dequeuePendingTurn("chat"), null);
+  assert.equal(await fixture.controller.startQueueDrainIfIdle("chat"), false);
+  assert.equal(fixture.pendingTurns.get("chat").length, 1);
+  assert.equal((await fixture.controller.enqueuePendingTurnFront("chat", { ...turn, id: "admitted" }, { restore: true })).ok, true);
+  paused = false;
+  assert.equal((await fixture.controller.dequeuePendingTurn("chat")).id, "admitted");
+  assert.equal((await fixture.controller.dequeuePendingTurn("chat")).id, "next");
+});
+
 test("failed final delivery remains visible without blocking later queued turns", async () => {
   const state = { queues: {}, worker: { deliveries: {
     "chat:old-job": { deliveryStatus: "delivery_failed", ambiguous: true }

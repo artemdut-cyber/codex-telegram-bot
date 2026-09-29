@@ -58,7 +58,7 @@ function createFixture({ queueChanged = 1 } = {}) {
       handleStandaloneReasoning: async () => {}
     },
     panels: { send: async () => {}, settingsHtml: () => "settings" },
-    callbacks: { handleQueue: async () => {}, handleSetting: async () => {}, handleTool: async () => {} },
+    callbacks: { handleQueue: async () => {}, handleSetting: async () => {}, handleTool: async (...args) => calls.push(["tool", ...args]) },
     skills: { isView: () => true, replyStatus: async () => {} },
     commands: {
       handleNew: async () => {},
@@ -97,6 +97,18 @@ function createFixture({ queueChanged = 1 } = {}) {
 function route(actions, source) {
   return actions.find(({ trigger }) => trigger instanceof RegExp && trigger.source === source)?.handler;
 }
+
+test("update callbacks forward the bound request ID and retain ordinary tool callbacks", async () => {
+  const { actions, calls } = createFixture();
+  const id = "01234567-89ab-cdef-0123-456789abcdef";
+  for (const data of [`tool:codex_update_start:${id}`, "tool:health"]) {
+    const action = actions.find(({ trigger }) => trigger instanceof RegExp && trigger.test(data));
+    assert.ok(action);
+    const ctx = { match: action.trigger.exec(data), answerCbQuery: async () => {} };
+    await action.handler(ctx);
+    assert.deepEqual(calls.at(-1), data.includes(id) ? ["tool", ctx, "codex_update_start", id] : ["tool", ctx, "health"]);
+  }
+});
 
 test("individual queue controls edit the original menu even when the item is gone", async () => {
   for (const queueChanged of [0, 1]) {

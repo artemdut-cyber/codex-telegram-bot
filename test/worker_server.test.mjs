@@ -37,6 +37,22 @@ test("worker server reports status", async () => {
   }
 });
 
+test("worker blocks new jobs during a host update without affecting status queries", async () => {
+  let starts = 0;
+  const { config, worker, client } = await startServer(async () => { starts += 1; });
+  config.codexUpdateDir = path.join(config.codexWorkerStateDir, "codex-update");
+  try {
+    await fs.mkdir(config.codexUpdateDir);
+    await fs.writeFile(path.join(config.codexUpdateDir, "status.json"), JSON.stringify({ phase: "waiting_idle" }));
+    await assert.rejects(client.startJob({ id: "blocked", chatKey: "chat" }), /new jobs are paused/);
+    assert.equal(starts, 0);
+    assert.equal((await client.status()).activeJobs.length, 0);
+    await fs.writeFile(path.join(config.codexUpdateDir, "status.json"), JSON.stringify({ phase: "succeeded" }));
+    await client.startJob({ id: "allowed", chatKey: "chat" });
+    assert.equal(starts, 1);
+  } finally { await worker.close(); }
+});
+
 test("worker server writes heartbeat events for running jobs", async () => {
   const executeJob = async ({ signal }) => {
     if (!signal.aborted) {

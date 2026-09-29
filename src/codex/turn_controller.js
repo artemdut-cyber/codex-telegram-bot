@@ -60,7 +60,7 @@ export function createTurnRuntimeController({
       );
       return;
     }
-    if (lifecycle.isRestartScheduled() || lifecycle.isRecoveryActive(chatKey)) {
+    if (lifecycle.isAdmissionPaused?.() || lifecycle.isRestartScheduled() || lifecycle.isRecoveryActive(chatKey)) {
       await handleSafeQueuedMessage(ctx, chatKey, text, loadImages);
       return;
     }
@@ -297,6 +297,10 @@ export function createTurnRuntimeController({
   async function runPreparedTurnQueue(chatKey, firstTurn, active) {
     let nextTurn = firstTurn;
     while (nextTurn) {
+      if (lifecycle.isAdmissionPaused?.()) {
+        await queue.enqueueFront(chatKey, nextTurn, { restore: true });
+        break;
+      }
       active.interruptBeforeStart = false;
       active.abortController = new AbortController();
       await processPreparedTurn(chatKey, nextTurn, active);

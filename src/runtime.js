@@ -28,6 +28,8 @@ import { createCleanupController } from "./maintenance/cleanup_controller.js";
 import { createBackupController } from "./maintenance/backup_controller.js";
 import { createCleanupRuntime } from "./maintenance/cleanup_runtime.js";
 import { createCodexMaintenanceController } from "./maintenance/runtime_controller.js";
+import { createCodexUpdateController } from "./maintenance/update_controller.js";
+import { startUpdateIdleReporter, updateAdmissionPaused } from "./maintenance/update_state.js";
 import { createQueueRuntimeController } from "./queue/runtime_controller.js";
 import {
   createRuntimeSettingsController,
@@ -269,6 +271,7 @@ const {
   sideTurns,
   settings: {
     maxPendingTurns: () => runtimeValue("telegramPendingTurnsMax"),
+    admissionPaused: () => updateAdmissionPaused(config),
     maxPendingAgeSeconds: () => runtimeValue("telegramPendingTurnMaxAgeSeconds")
   },
   chats: {
@@ -860,7 +863,21 @@ const {
     register: registerTelegramCommands
   }
 });
+const codexUpdate = createCodexUpdateController({
+  config, appRoot, telegram: { getChatKey, editOrReplyHtml },
+  keyboards: { inline: inlineKeyboard, withClose: withMenuCloseButton },
+  text: t, language: uiLanguage
+});
+startUpdateIdleReporter({
+  config,
+  isIdle: () => activeTurns.size === 0 && countSideTurns() === 0
+    && !Object.values(state.worker?.deliveries || {}).some((entry) => ["result_ready", "delivery_sending"].includes(entry.deliveryStatus)),
+  resumeQueues: async () => {
+    for (const chatKey of pendingTurns.keys()) await startQueueDrainIfIdle(chatKey);
+  }
+});
 const { handleToolButton } = createToolCallbackController({
+  codexUpdate,
   settings: {
     config,
     runtimeValue

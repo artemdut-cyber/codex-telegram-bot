@@ -122,6 +122,7 @@ export function createOperationsKeyboardViews({
         { text: msg("ui.report"), callback_data: "tool:codex_maintenance_report", style: "primary" },
         { text: msg("ui.backup2"), callback_data: "tool:codex_maintenance_backup", style: "success" }
       ],
+      [{ text: `⬆️ ${msg("ui.codexUpdateButton")}`, callback_data: "tool:codex_update", style: "primary" }],
       [
         { text: msg("ui.configPrune"), callback_data: "tool:codex_maintenance_config", style: "primary" },
         { text: msg("ui.worktreesArchive"), callback_data: "tool:codex_maintenance_worktrees", style: "primary" }

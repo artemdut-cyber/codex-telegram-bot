@@ -548,6 +548,15 @@ the environment values on first startup.
 
 ## systemd User Service
 
+### Codex update button
+
+**Tools → Codex Maintenance → Codex update** checks the installed and latest
+stable versions. Administrators can start a Linux standalone update with isolated
+download/verification, job completion waiting, queued-input preservation, service
+verification, rollback and exact-origin completion notifications. Model and
+account settings are preserved. See [Codex update panel](docs/codex-update.md)
+for administrator, installation-home and service configuration.
+
 For an existing default-path installation, stop the services before the
 one-time permission correction below. `find -P` does not follow symlinks.
 Inspect and handle any symlink separately; do not apply these recursive

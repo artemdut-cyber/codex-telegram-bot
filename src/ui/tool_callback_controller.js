@@ -11,12 +11,16 @@ export function createToolCallbackController({
   backup,
   cleanup,
   maintenance,
+  codexUpdate,
   persistence,
   formatting,
   localization
 }) {
   const msg = createMessageFormatter(localization.text);
-  async function handleToolButton(ctx, action) {
+  async function handleToolButton(ctx, action, requestId) {
+    if (action === "codex_update" || action === "codex_update_start" || action === "codex_update_recover") {
+      return codexUpdate?.handle(ctx, action, requestId);
+    }
     const chatKey = telegram.getChatKey(ctx);
     if (action === "health") {
       await telegram.editOrReplyHtml(ctx, await diagnostics.formatHealth(), keyboards.withToolsBack());

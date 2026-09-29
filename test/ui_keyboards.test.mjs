@@ -2,9 +2,24 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   booleanOptionKeyboardRows,
+  createRuntimeKeyboardViews,
   modelSelectionKeyboard,
   reasoningSelectionKeyboard
 } from "../src/ui/keyboards.js";
+import { textFor } from "../src/i18n.js";
+
+test("Codex update sits directly below report and backup with maintenance navigation intact", () => {
+  const views = createRuntimeKeyboardViews({ text: (key) => textFor("ko", key),
+    hasActiveTurn: () => false, sideTurnCount: () => 0,
+    currentLanguage: () => "ko", currentTimeZone: () => "Asia/Seoul", currentLocale: () => "ko-KR"
+  });
+  const rows = views.codexMaintenanceKeyboard().reply_markup.inline_keyboard;
+  const index = rows.findIndex((row) => row.some((button) => button.callback_data === "tool:codex_update"));
+  assert.ok(index > 0);
+  assert.deepEqual(rows[index - 1].map((button) => button.callback_data), ["tool:codex_maintenance_report", "tool:codex_maintenance_backup"]);
+  assert.equal(rows[index].length, 1);
+  assert.ok(rows.some((row) => row.some((button) => button.callback_data === "p:tools")));
+});
 
 test("boolean option keyboard rows include default, on, off, and settings back row", () => {
   assert.deepEqual(booleanOptionKeyboardRows("network", "Settings"), [

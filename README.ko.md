@@ -469,6 +469,15 @@ journalctl --user -u codex-telegram-worker.service -f
 journalctl --user -u codex-telegram-bot.service -f
 ```
 
+## Codex 업데이트 버튼
+
+**도구 → Codex 유지보수 → Codex 업데이트**에서 현재 설치 버전과 최신 안정
+버전을 확인할 수 있습니다. 관리자가 시작하면 Linux standalone 설치를 별도
+경로에서 다운로드·검증하고, 실행 작업과 최종 응답 전달이 끝난 뒤 적용합니다.
+새 요청은 대기열에 보관하며, 서비스 검증 실패 시 이전 버전으로 복구합니다.
+모델·추론 강도·계정·세션은 보존하고 요청한 봇·채팅·토픽으로 결과를 전달합니다.
+설정과 복구 절차는 [Codex 업데이트 패널](docs/codex-update.md)을 참고하세요.
+
 ## 라이선스
 
 MIT 라이선스입니다. 자세한 내용은 [LICENSE](LICENSE)를 확인하세요.

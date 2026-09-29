@@ -154,10 +154,10 @@ export function registerCallbackRoutes({
     await ctx.answerCbQuery();
     await callbacks.handleSetting(ctx, key, value);
   });
-  bot.action(/^tool:([a-z_]+)$/, async (ctx) => {
-    const [, action] = ctx.match;
+  bot.action(/^tool:([a-z_]+)(?::([a-f0-9-]{36}))?$/, async (ctx) => {
+    const [, action, requestId] = ctx.match;
     await ctx.answerCbQuery();
-    await callbacks.handleTool(ctx, action);
+    await callbacks.handleTool(ctx, action, ...(requestId ? [requestId] : []));
   });
   bot.action(/^sk:([a-z]):([0-9]+)$/, async (ctx) => {
     const [, view, page] = ctx.match;

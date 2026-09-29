@@ -4,6 +4,14 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+- Add a Codex Update button below report/backup in Tools → Codex Maintenance.
+  Linux standalone updates use the official installer in isolated staging,
+  wait for all jobs and final responses, preserve queued requests and user
+  settings, and verify required services after activation. Detached user systemd
+  jobs persist results, restore interrupted/failed selections, and notify the
+  exact originating bot/chat/topic. Update administrators, expiring previews,
+  and host/install locks prevent unauthorized or duplicate activation.
+
 ## 1.3.8 - 2026-09-28
 
 - Ignore Codex's nonfatal unsupported-configuration notices in live progress

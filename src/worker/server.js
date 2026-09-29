@@ -5,6 +5,7 @@ import { createFrameReader, encodeFrame, errorResponse, okResponse } from "./pro
 import { createWorkerStore } from "./store.js";
 import { createWorkerLogMaintenance } from "./log_retention.js";
 import { runWorkerJob } from "./executor.js";
+import { updateAdmissionPaused } from "../maintenance/update_state.js";
 import {
   WORKER_RESTART_FAILURE_MESSAGE,
   WORKER_RESTART_FAILURE_REASON
@@ -41,6 +42,7 @@ export function createWorkerServer({
     if (method === "job/events") return jobEvents(store, params.jobId, params);
     if (method === "job/cancel") return cancelJob(store, controllers, params.jobId);
     if (method === "job/start") {
+      if (updateAdmissionPaused(config)) throw new Error("Codex update is waiting for idle; new jobs are paused.");
       return startJob({ config, store, controllers, codexClients, jobTasks, executeJob, logger, heartbeatMs, job: params.job });
     }
     throw new Error(`Unknown worker method: ${method}`);

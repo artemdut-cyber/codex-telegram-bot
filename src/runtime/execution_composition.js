@@ -6,6 +6,7 @@ import { createManualDeliveryController } from "../recovery/manual_delivery.js";
 import { createLiveProgressController } from "../ui/live_progress.js";
 import { createWorkerRuntimeController } from "../worker/runtime_controller.js";
 import { accountThreadId } from "../accounts/context.js";
+import { updateAdmissionPaused } from "../maintenance/update_state.js";
 
 export function createExecutionComposition(r) {
   const journal = createTurnRecoveryJournal({
@@ -173,6 +174,7 @@ export function createExecutionComposition(r) {
       startDrain: r.startQueueDrainIfIdle
     },
     lifecycle: {
+      isAdmissionPaused: () => updateAdmissionPaused(r.config),
       isRecoveryActive: r.isRecoveryActive,
       isRestartScheduled: () => recoveryController?.isRestartScheduled() ?? false,
       onTurnFinished: r.onTurnFinished,

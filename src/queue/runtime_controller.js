@@ -40,14 +40,14 @@ export function createQueueRuntimeController({
     return enqueuePendingTurnAt(chatKey, preparedTurn, false);
   }
 
-  async function enqueuePendingTurnFront(chatKey, preparedTurn) {
-    return enqueuePendingTurnAt(chatKey, preparedTurn, true);
+  async function enqueuePendingTurnFront(chatKey, preparedTurn, { restore = false } = {}) {
+    return enqueuePendingTurnAt(chatKey, preparedTurn, true, restore);
   }
 
-  async function enqueuePendingTurnAt(chatKey, preparedTurn, front) {
+  async function enqueuePendingTurnAt(chatKey, preparedTurn, front, restore = false) {
     const queue = getPendingTurns(chatKey);
     const result = enqueueTurn(queue, preparedTurn, {
-      max: settings.maxPendingTurns(),
+      max: restore ? Number.MAX_SAFE_INTEGER : settings.maxPendingTurns(),
       front
     });
     if (!result.ok) return { ok: false, position: queue.length };
@@ -57,6 +57,7 @@ export function createQueueRuntimeController({
   }
 
   async function dequeuePendingTurn(chatKey, ctx = null) {
+    if (settings.admissionPaused?.()) return null;
     const result = dequeueNextTurn(getPendingTurns(chatKey), queueExpiryOptions());
     replaceQueue(chatKey, result.queue);
     await persistPendingTurns(chatKey);
@@ -202,7 +203,7 @@ export function createQueueRuntimeController({
   }
 
   async function startQueueDrainIfIdle(chatKey, ctx = null) {
-    if (activeTurns.has(chatKey) || hasPendingFinalDelivery(chatKey) || isQueuePaused(chatKey)) {
+    if (settings.admissionPaused?.() || activeTurns.has(chatKey) || hasPendingFinalDelivery(chatKey) || isQueuePaused(chatKey)) {
       return false;
     }
     const runCtx = ctx ?? telegram.createSyntheticContext(getPendingTurns(chatKey)[0] || chatKey);

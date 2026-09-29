@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { setImmediate as waitForImmediate } from "node:timers/promises";
 import { createTurnRuntimeController } from "../src/codex/turn_controller.js";
 
-function createHarness({ queueMode = "safe", workerEnabled = false, runTurnError = null, replyError = null, beforeTurn } = {}) {
+function createHarness({ queueMode = "safe", workerEnabled = false, runTurnError = null, replyError = null, beforeTurn, isAdmissionPaused = () => false } = {}) {
   const activeTurns = new Map();
   const pending = new Map();
   const calls = [];
@@ -51,6 +51,7 @@ function createHarness({ queueMode = "safe", workerEnabled = false, runTurnError
       startDrain: record("drain")
     },
     lifecycle: {
+      isAdmissionPaused,
       isRecoveryActive: () => false,
       isRestartScheduled: () => false,
       beforeTurn,
@@ -167,6 +168,26 @@ test("turn preparation merges reply context, images, routing, and expiry", async
   assert.match(turn.inputText, /<current_message>\ncurrent/);
   assert.equal(turn.enqueuedAt, "2026-07-21T05:06:07.000Z");
   assert.equal(turn.expiresAt, "2026-07-21T05:07:07.000Z");
+});
+
+test("an update pause queues even interrupt-mode requests without aborting the active task", async () => {
+  const f = createHarness({ queueMode: "interrupt", isAdmissionPaused: () => true });
+  const abortController = new AbortController();
+  f.activeTurns.set("chat:42", { abortController });
+  await f.controller.handleCodexMessage(f.ctx, "new work", async () => []);
+  assert.equal(abortController.signal.aborted, false);
+  assert.equal(f.pending.get("chat:42").length, 1);
+  assert.equal(f.calls.some(([name]) => name === "run-turn"), false);
+});
+
+test("a turn admitted before update pause is restored to the queue without execution", async () => {
+  const f = createHarness({ isAdmissionPaused: () => true });
+  const active = { stopRequested: false };
+  f.activeTurns.set("chat:42", active);
+  await f.controller.runPreparedTurnQueue("chat:42", { id: "admitted", ctx: f.ctx, text: "work" }, active);
+  assert.equal(f.pending.get("chat:42")[0].id, "admitted");
+  assert.equal(f.activeTurns.size, 0);
+  assert.equal(f.calls.some(([name]) => name === "run-turn"), false);
 });
 
 test("completion observers distinguish successful delivery from a failed turn", async () => {
