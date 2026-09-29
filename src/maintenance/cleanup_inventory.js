@@ -28,7 +28,11 @@ export function createCleanupInventory({
     for (const file of files.filter((entry) => entry.endsWith(".jsonl"))) {
       const meta = await sessions.readMeta(file);
       if (!meta?.id) continue;
-      const stat = await fs.stat(file);
+      const stat = await fs.stat(file).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      if (!stat) continue;
       if (protectedThreadIds.has(meta.id)) continue;
       if (stat.mtimeMs >= cutoff) {
         recentCount += 1;
@@ -59,7 +63,11 @@ export function createCleanupInventory({
       - settings.runtimeValue("cleanupQuarantineDays") * 24 * 60 * 60 * 1000;
     const candidates = [];
     for (const file of files.filter((entry) => entry.endsWith(".jsonl"))) {
-      const stat = await fs.stat(file);
+      const stat = await fs.stat(file).catch((error) => {
+        if (error?.code === "ENOENT") return null;
+        throw error;
+      });
+      if (!stat) continue;
       const metadata = await readCleanupMetadata(file);
       const quarantinedAt = metadata?.quarantinedAt
         ? Date.parse(metadata.quarantinedAt)

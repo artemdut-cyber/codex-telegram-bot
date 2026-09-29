@@ -307,6 +307,10 @@ export function createCleanupController({
           });
           result.quarantined += 1;
         } catch (error) {
+          if (error?.code === "ENOENT" && await sourceIsMissing(candidate.path)) {
+            result.skipped += 1;
+            continue;
+          }
           result.errors.push(
             `${candidate.threadId}: ${error instanceof Error ? error.message : String(error)}`
           );
@@ -341,6 +345,10 @@ export function createCleanupController({
           });
           result.deleted += 1;
         } catch (error) {
+          if (error?.code === "ENOENT" && await sourceIsMissing(candidate.path)) {
+            result.skipped += 1;
+            continue;
+          }
           result.errors.push(
             `${candidate.threadId}: ${error instanceof Error ? error.message : String(error)}`
           );
@@ -387,6 +395,15 @@ export function createCleanupController({
     sendDailyCleanupPlan,
     summarizeCleanupPlan
   };
+}
+
+async function sourceIsMissing(file) {
+  try {
+    await fs.lstat(file);
+    return false;
+  } catch (error) {
+    return error?.code === "ENOENT";
+  }
 }
 
 function isPathInside(candidatePath, rootPath) {

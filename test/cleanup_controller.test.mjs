@@ -240,6 +240,38 @@ test("cleanup controller skips sessions that become protected after planning", a
   assert.equal(await fs.readFile(source, "utf8"), "active\n");
 });
 
+test("cleanup controller skips planned files that disappear before execution", async (t) => {
+  const root = await createFixture(t);
+  const harness = createHarness({ root });
+  const present = path.join(harness.quarantineDir, "old", "present.jsonl");
+  await fs.mkdir(path.dirname(present), { recursive: true });
+  await fs.writeFile(present, "session\n");
+  const plan = {
+    id: "stale-files",
+    quarantineCandidates: [{
+      threadId: "missing-quarantine",
+      path: path.join(harness.sessionsDir, "missing.jsonl")
+    }],
+    deleteCandidates: [
+      { threadId: "present", path: present },
+      ...Array.from({ length: 5 }, (_, index) => ({
+        threadId: `missing-delete-${index}`,
+        path: path.join(harness.quarantineDir, "old", `missing-${index}.jsonl`)
+      }))
+    ]
+  };
+
+  const result = await harness.controller.applyCleanupPlan(plan, "both");
+
+  assert.equal(result.quarantined, 0);
+  assert.equal(result.deleted, 1);
+  assert.equal(result.skipped, 6);
+  assert.deepEqual(result.errors, []);
+  assert.equal((await fs.readFile(result.manifest, "utf8")).trim().split("\n").length, 1);
+  assert.equal(await fs.readFile(path.join(result.artifactDir, "delete-backup", "old", "present.jsonl"), "utf8"), "session\n");
+  await assert.rejects(fs.access(present));
+});
+
 test("automatic daily cleanup runs both actions and sends only the result report", async (t) => {
   const root = await createFixture(t);
   const source = path.join(root, "sessions", "thread-auto.jsonl");
