@@ -4,6 +4,8 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+- Delete the menu message when its Close button is pressed, without leaving a
+  "menu closed" confirmation in the conversation.
 - Edit the original Codex update panel with the final result after service
   verification, preserving its bot/chat/topic/message identity across restarts.
   Do not create a separate completion message or leave the launch status behind.

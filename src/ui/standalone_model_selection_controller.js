@@ -5,6 +5,7 @@ import {
   reasoningOptionsForModel
 } from "../codex/models.js";
 import { b, code } from "../telegram/html.js";
+import { summarizeTelegramError } from "../telegram/api.js";
 import {
   applyModelSelectionDraft,
   applyReasoningSelection
@@ -258,8 +259,16 @@ export function createStandaloneModelSelectionController({
   }
 
   async function handleMenuClose(ctx) {
-    const edited = await telegram.editStrict(ctx, t("menuClosed"), views.emptyInlineKeyboard());
-    await telegram.answerUiCallback(ctx, edited);
+    let deleted = false;
+    try {
+      await ctx.deleteMessage();
+      deleted = true;
+    } catch (error) {
+      const summary = summarizeTelegramError(error);
+      deleted = summary.code === 400 && /message to delete not found/i.test(summary.description);
+      if (!deleted) console.warn("Telegram menu deletion failed:", summary);
+    }
+    await telegram.answerUiCallback(ctx, deleted);
   }
 
   async function standaloneSelectionSession(ctx, chatKey, token, kind, phase) {

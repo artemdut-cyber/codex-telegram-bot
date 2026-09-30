@@ -449,11 +449,14 @@ test("account list closes through the shared menu handler without changing accou
   await f.send("/accounts");
   const close = f.buttons().filter((button) => button.callback_data === "ui:close:menu");
   assert.deepEqual(close, [{ text: "✖️ 닫기", callback_data: "ui:close:menu" }]);
+  const panel = f.messages.at(-1), count = f.messages.length;
   await f.click(close[0].callback_data);
-  const edit = f.apiCalls.find((call) => call.method === "editMessageText");
-  assert.equal(edit.payload.text, "menuClosed");
-  assert.deepEqual(edit.payload.reply_markup.inline_keyboard, []);
+  const deletion = f.apiCalls.find((call) => call.method === "deleteMessage");
+  assert.deepEqual(deletion.payload, { chat_id: panel.chat.id, message_id: panel.message_id });
+  assert.equal(f.apiCalls.some((call) => call.method === "editMessageText" || call.method === "sendMessage"), false);
+  assert.equal(f.messages.length, count);
   assert.equal(f.apiCalls.filter((call) => call.method === "answerCallbackQuery").length, 1);
+  assert.equal(f.callbackText(), undefined);
   assert.deepEqual((await f.store.list()).map((account) => account.id), ["default"]);
 });
 
@@ -824,9 +827,10 @@ test("account list and slash usage share the panel, and navigation clears name i
   assert.match(f.messages.at(-1).html, /Codex · 주간/);
   assert.equal(f.apiCalls.filter((call) => call.method === "answerCallbackQuery").length, before);
   assert.equal(f.savedState().accountUi["1:1"], undefined);
+  const panel = f.messages.at(-1);
   await f.click(f.buttonData("ui:close:menu"));
-  assert.equal(f.messages.at(-1).text, "menuClosed");
-  assert.deepEqual(f.buttons(), []);
+  assert.ok(f.apiCalls.some((call) => call.method === "deleteMessage" && call.payload.message_id === panel.message_id));
+  assert.notEqual(panel.text, "menuClosed");
   assert.equal(f.forwarded.length, 0);
 });
 
@@ -1031,8 +1035,8 @@ test("deleted or failing usage accounts keep other account buttons usable", asyn
   await f.click("acct:usage:default", panel);
   assert.match(panel.html, /Codex · 주간/);
   await f.click(f.buttonData("ui:close:menu", panel), panel);
-  assert.equal(panel.text, "menuClosed");
-  assert.deepEqual(f.buttons(panel), []);
+  assert.ok(f.apiCalls.some((call) => call.method === "deleteMessage" && call.payload.message_id === panel.message_id));
+  assert.notEqual(panel.text, "menuClosed");
 });
 
 test("Russian replies to cleared account name prompts expire instead of becoming Codex input", async (t) => {

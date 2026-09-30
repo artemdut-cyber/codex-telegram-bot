@@ -28,8 +28,11 @@ test("composed Telegram routes navigate settings, mutate an option, return and c
   previous(f, "p:settings");
   await press(f, "p:settings");
   await press(f, "p:main");
+  const panel = f.messages.at(-1), count = f.messages.length;
   await press(f, "ui:close:menu");
-  assert.equal(f.buttons().length, 0);
+  assert.ok(f.apiCalls.some((call) => call.method === "deleteMessage" && call.payload.message_id === panel.message_id));
+  assert.equal(f.messages.length, count);
+  assert.doesNotMatch(panel.text || "", /메뉴를 닫았습니다/);
 });
 
 test("composed tools and workspace menus preserve their entry route", async (t) => {
