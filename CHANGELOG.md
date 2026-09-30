@@ -4,6 +4,8 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+- Refresh patched `brace-expansion` and `ip-address` dependencies so security
+  audits pass without weakening the audit gate.
 - Delete the menu message when its Close button is pressed, without leaving a
   "menu closed" confirmation in the conversation.
 - Edit the original Codex update panel with the final result after service
