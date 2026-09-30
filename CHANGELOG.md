@@ -4,6 +4,9 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+- Edit the original Codex update panel with the final result after service
+  verification, preserving its bot/chat/topic/message identity across restarts.
+  Do not create a separate completion message or leave the launch status behind.
 - Wait for the worker's status handshake after restart before restarting the
   bot or declaring activation failed. Retry transient socket startup errors
   within a bounded readiness window; retain failure handling for genuine errors.

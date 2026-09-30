@@ -46,6 +46,85 @@ test("target validation requires a bot and allowed chat/topic", () => {
   assert.throws(() => notificationTarget({ ...target, threadId: "bad" }, access));
   assert.throws(() => notificationTarget(target, { ...access, allowedThreadIds: new Set(["2"]) }));
   assert.deepEqual(notificationTarget({ ...target, chatId: "-1001", threadId: "2" }, access), { ...target, chatId: "-1001", threadId: "2" });
+  assert.deepEqual(notificationTarget({ ...target, messageId: 21 }, access), { ...target, messageId: "21" });
+  for (const messageId of ["", "0", "-1", "1.5", "bad", "9007199254740992"]) {
+    assert.throws(() => notificationTarget({ ...target, messageId }, access), /message-id-invalid/);
+  }
+});
+
+test("completion edits the exact original panel and removes its pending buttons without sending", async (t) => {
+  const f = await fixture(t);
+  f.config.target = { ...target, chatId: "-1001", threadId: "2", messageId: "88" };
+  const edits = [];
+  f.config.telegram.editMessageText = async (...args) => {
+    edits.push(args);
+    return { ...sent, chat: { id: -1001 }, message_thread_id: 2, message_id: 88 };
+  };
+  const result = await sendBackgroundNotification(f.config);
+  assert.equal(result.ok, true);
+  assert.equal(result.operation, "edit");
+  assert.equal(result.targetMessageId, "88");
+  assert.equal(result.messageId, 88);
+  assert.deepEqual(edits, [["-1001", 88, f.config.text, {
+    link_preview_options: { is_disabled: true }, reply_markup: { inline_keyboard: [] }
+  }]]);
+  assert.equal(f.calls.length, 0);
+  assert.equal((await sendBackgroundNotification(f.config)).reused, true);
+  assert.equal(edits.length, 1);
+  await assert.rejects(sendBackgroundNotification({ ...f.config, target: { ...f.config.target, messageId: "89" } }), /identity-mismatch/);
+  const { messageId: _messageId, ...sendTarget } = f.config.target;
+  await assert.rejects(sendBackgroundNotification({ ...f.config, target: sendTarget }), /identity-mismatch/);
+});
+
+test("wrong bot cannot edit the panel", async (t) => {
+  const f = await fixture(t);
+  f.config.target = { ...target, messageId: "21" };
+  f.config.telegram.getMe = async () => ({ id: 99999, is_bot: true });
+  let edits = 0;
+  f.config.telegram.editMessageText = async () => { edits++; return sent; };
+  assert.equal((await sendBackgroundNotification(f.config)).ok, false);
+  assert.equal(edits, 0);
+  assert.equal(f.calls.length, 0);
+});
+
+test("an already updated panel is successful without creating a new message", async (t) => {
+  const f = await fixture(t);
+  f.config.target = { ...target, messageId: "21" };
+  f.config.telegram.editMessageText = async () => {
+    throw Object.assign(new Error("unchanged"), { response: { error_code: 400, description: "Bad Request: message is not modified" } });
+  };
+  const result = await sendBackgroundNotification(f.config);
+  assert.equal(result.ok, true);
+  assert.equal(result.messageId, 21);
+  assert.equal(result.deliveryEvidence, "telegram_api_not_modified");
+  assert.equal(f.calls.length, 0);
+});
+
+for (const error of [apiError(400), Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })]) {
+  test(`failed edit (${error.code || error.response.error_code}) never falls back to a new message`, async (t) => {
+    const f = await fixture(t);
+    f.config.target = { ...target, messageId: "21" };
+    f.config.telegram.editMessageText = async () => { throw error; };
+    const result = await sendBackgroundNotification(f.config);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, error.code ? "uncertain" : "failed");
+    assert.equal(f.calls.length, 0);
+  });
+}
+
+test("an edit response for a different message is not accepted", async (t) => {
+  const f = await fixture(t);
+  f.config.target = { ...target, messageId: "88" };
+  f.config.telegram.editMessageText = async () => sent;
+  assert.equal((await sendBackgroundNotification(f.config)).status, "uncertain");
+  assert.equal(f.calls.length, 0);
+});
+
+test("a prior send receipt cannot masquerade as a successful panel edit", async (t) => {
+  const f = await fixture(t);
+  await sendBackgroundNotification(f.config);
+  await assert.rejects(sendBackgroundNotification({ ...f.config, target: { ...target, messageId: "21" } }), /identity-mismatch/);
+  assert.equal(f.calls.length, 1);
 });
 
 test("wrong bot fails before send, even when chat ID matches", async (t) => {

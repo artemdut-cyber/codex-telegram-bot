@@ -292,7 +292,17 @@ test("panel preview is bound to administrator and message, with exact topic stor
   await f.controller.handle(f.ctx, "codex_update_start", id);
   await f.controller.handle(f.ctx, "codex_update_start", id);
   assert.equal(f.launches.length, 1);
-  assert.deepEqual((await readUpdateState(f.config)).origin, { botId: "123", chatId: "-100", threadId: "7" });
+  assert.deepEqual((await readUpdateState(f.config)).origin, { botId: "123", chatId: "-100", threadId: "7", messageId: "88" });
+});
+
+test("update cannot launch without a durable panel message ID", async (t) => {
+  const f = await controllerFixture(t);
+  const ctx = { ...f.ctx, callbackQuery: { message: { message_thread_id: 7 } } };
+  await f.controller.handle(ctx, "codex_update");
+  const id = f.edits.at(-1)[2][0][0].callback_data.split(":").at(-1);
+  await f.controller.handle(ctx, "codex_update_start", id);
+  assert.equal(f.launches.length, 0);
+  assert.match(f.edits.at(-1)[1], /panel message ID required/);
 });
 
 test("latest version and expired preview never launch an updater", async (t) => {

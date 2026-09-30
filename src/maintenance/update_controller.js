@@ -96,11 +96,13 @@ export function createCodexUpdateController({
     if (path.resolve(directory) !== appRoot) throw new Error("Update bot service WorkingDirectory does not match this repository.");
     const me = ctx.botInfo || await ctx.telegram.getMe();
     const meta = telegramContextMeta(ctx);
+    const messageId = ctx.callbackQuery?.message?.message_id;
+    if (!Number.isSafeInteger(messageId) || messageId <= 0) throw new Error("Update panel message ID required.");
     const state = {
       id, unit: `codex-cli-update-${id}.service`, phase: "launching",
       installation: observed, target: preview.target, requestedBy: String(ctx.from.id),
       language: language(), startedAt: new Date(now()).toISOString(),
-      origin: { botId: String(me.id), chatId: String(meta.chatId), threadId: String(meta.messageThreadId || "") }
+      origin: { botId: String(me.id), chatId: String(meta.chatId), threadId: String(meta.messageThreadId || ""), messageId: String(messageId) }
     };
     if (!await claimUpdate(config, state)) return edit(ctx, msg("ui.codexUpdateLocked"));
     previews.delete(id);

@@ -4,7 +4,9 @@ Open **Tools → Codex Maintenance → Codex update**. The button is below repor
 and backup. Opening it checks the installed CLI and latest stable release without
 installing anything. An authorized administrator sees **Start update** when a
 newer release is available. Refresh updates the progress view; the detached
-operation sends a completion message to the requesting bot/chat/topic.
+operation edits the original update panel with the final result, including after
+bot restarts. Its bot/chat/topic/message identity is saved before launch. No
+separate completion message is sent; pending buttons are removed on completion.
 
 ## Supported runtime
 
@@ -63,7 +65,10 @@ preserved. Older release directories remain available for rollback. Update state
 per-run results and notification receipts live under `codex-update` next to
 `STATE_FILE`; runtime artifacts are never committed. Staging is removed after
 terminal outcomes. A failed/uncertain notification must be reconciled using its
-receipt; never repeat an update just to resend its completion message.
+receipt; never repeat an update just to repair the panel. If the original message
+was deleted or cannot be edited, record the edit failure without creating a new
+message. Older runs without a saved panel message ID require explicit recovery
+of that ID; their completion is never sent to a newly created message.
 
 The global host lock is under
 `CODEX_UPDATE_HOME/packages/standalone/.telegram-update-lock`. If another bot

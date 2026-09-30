@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import dotenv from "dotenv";
 import { readTelegramAccessConfig } from "../config/telegram.js";
-import { summarizeTelegramError } from "./api.js";
+import { isTelegramMessageNotModified, summarizeTelegramError } from "./api.js";
 
 const SCHEMA = "codex.telegram_background_notification.v1";
 
@@ -11,7 +11,7 @@ export async function loadNotificationAccess(appRoot) {
   return readTelegramAccessConfig(dotenv.parse(await fs.readFile(path.join(appRoot, ".env"))));
 }
 
-export function notificationTarget({ botId, chatId, threadId = "" }, access) {
+export function notificationTarget({ botId, chatId, threadId = "", messageId }, access) {
   const target = { botId: String(botId || ""), chatId: String(chatId || ""), threadId: String(threadId || "") };
   if (!/^[1-9]\d*$/.test(target.botId)) throw new Error("expected-bot-id-required");
   if (!/^-?[1-9]\d*$/.test(target.chatId)) throw new Error("chat-id-invalid");
@@ -23,6 +23,12 @@ export function notificationTarget({ botId, chatId, threadId = "" }, access) {
   if (access.allowedThreadIds?.size && (!target.threadId || !access.allowedThreadIds.has(target.threadId))) {
     throw new Error("notification-thread-not-allowed");
   }
+  if (messageId !== undefined) {
+    if (!/^[1-9]\d*$/.test(String(messageId)) || !Number.isSafeInteger(Number(messageId))) {
+      throw new Error("message-id-invalid");
+    }
+    target.messageId = String(messageId);
+  }
   return target;
 }
 
@@ -33,7 +39,16 @@ export async function sendBackgroundNotification({
   if (typeof text !== "string" || !text.trim() || text.length > 4000) {
     throw new Error("notification-text-must-be-1-to-4000-characters");
   }
-  const identity = { ...target, textSha256: createHash("sha256").update(text).digest("hex") };
+  const editing = target.messageId !== undefined;
+  if (editing && (!/^[1-9]\d*$/.test(String(target.messageId)) || !Number.isSafeInteger(Number(target.messageId)))) {
+    throw new Error("message-id-invalid");
+  }
+  const identity = {
+    ...target, textSha256: createHash("sha256").update(text).digest("hex"),
+    ...(editing ? { operation: "edit", targetMessageId: String(target.messageId) } : {})
+  };
+  // messageId in the receipt is the numeric API result, not the target string.
+  if (editing) delete identity.messageId;
   const absoluteReceipt = path.resolve(receiptPath);
   await fs.mkdir(path.dirname(absoluteReceipt), { recursive: true, mode: 0o700 });
   const lockPath = `${absoluteReceipt}.lock`;
@@ -50,7 +65,8 @@ export async function sendBackgroundNotification({
       if (error.code !== "ENOENT") throw error;
     }
     if (previous) {
-      if (previous.schema !== SCHEMA || Object.entries(identity).some(([key, value]) => previous[key] !== value)) {
+      if (previous.schema !== SCHEMA || (previous.operation === "edit") !== editing
+          || Object.entries(identity).some(([key, value]) => previous[key] !== value)) {
         throw new Error("notification-receipt-identity-mismatch");
       }
       if (previous.status === "sent" && previous.ok === true && previous.messageId > 0) {
@@ -78,12 +94,26 @@ export async function sendBackgroundNotification({
       requestStarted = true;
       let sent;
       try {
-        sent = await telegram.sendMessage(target.chatId, text, {
+        sent = editing ? await telegram.editMessageText(target.chatId, Number(target.messageId), text, {
+          link_preview_options: { is_disabled: true },
+          reply_markup: { inline_keyboard: [] }
+        }) : await telegram.sendMessage(target.chatId, text, {
           disable_notification: false,
           link_preview_options: { is_disabled: true },
           ...(target.threadId ? { message_thread_id: Number(target.threadId) } : {})
         });
       } catch (error) {
+        // Reapplying identical content to this exact message is already complete.
+        // Never fall back to sendMessage when the original panel cannot be edited.
+        if (editing && isTelegramMessageNotModified(error)) {
+          Object.assign(entry, { status: "sent", finishedAt: now(), messageId: Number(target.messageId), unchanged: true });
+          Object.assign(receipt, {
+            ok: true, status: "sent", retrySafe: false, messageId: Number(target.messageId),
+            finishedAt: now(), deliveryEvidence: "telegram_api_not_modified", recipientReadConfirmed: false
+          });
+          await writeReceipt(absoluteReceipt, receipt);
+          return { ...receipt, reused: false };
+        }
         const summary = summarizeTelegramError(error);
         Object.assign(entry, { status: "failed", finishedAt: now(), error: summary });
         const rejected = summary.kind === "api" && Number(summary.code) >= 400 && Number(summary.code) < 500;
@@ -99,6 +129,7 @@ export async function sendBackgroundNotification({
       }
       if (String(sent?.chat?.id) !== target.chatId || String(sent?.from?.id) !== target.botId
           || String(sent?.message_thread_id || "") !== target.threadId
+          || (editing && String(sent?.message_id) !== String(target.messageId))
           || !Number.isSafeInteger(sent?.message_id) || sent.message_id <= 0) {
         throw new Error("notification-response-identity-mismatch");
       }

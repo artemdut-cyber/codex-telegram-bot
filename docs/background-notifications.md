@@ -24,6 +24,13 @@ allowlists; an inherited Hermes/API token cannot change the sender. It checks
 `getMe` before sending and validates the returned bot, chat, topic and message ID.
 Plain text avoids Markdown parse failures and notifications are explicitly on.
 
+For an existing progress panel, add `--message-id ID` captured from its Telegram
+callback message at launch. This uses `editMessageText`, removes pending buttons,
+and never falls back to sending a new message. Edit receipts also bind the
+operation and target message ID; they cannot reuse a send receipt. A definitive
+"message is not modified" response confirms the panel already has the requested
+content. A deleted/uneditable panel leaves a failed receipt for review.
+
 Each receipt binds bot/chat/topic and text SHA-256. It uses a single-writer lock
 and atomic fsync writes. `sent` is persisted only after Telegram acceptance;
 repeating the same successful request reuses its receipt without sending again.

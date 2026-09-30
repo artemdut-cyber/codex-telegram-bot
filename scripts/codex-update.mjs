@@ -24,15 +24,19 @@ const text = msg(`ui.codexUpdateResult.${result.phase}`, {
 const runDir = path.join(config.codexUpdateDir, "runs", result.id);
 const messageFile = path.join(runDir, "completion.txt");
 await writePrivateFileAtomic(messageFile, text);
-const args = [path.join(appRoot, "scripts/send-background-notification.mjs"),
-  "--expected-bot-id", result.origin.botId, "--chat-id", result.origin.chatId,
-  "--file", messageFile, "--receipt", path.join(runDir, "notification.json")];
-if (result.origin.threadId) args.push("--thread-id", result.origin.threadId);
 try {
+  if (!/^[1-9]\d*$/.test(String(result.origin.messageId || "")) || !Number.isSafeInteger(Number(result.origin.messageId))) {
+    throw new Error("Update panel message ID missing; no new completion message sent.");
+  }
+  const args = [path.join(appRoot, "scripts/send-background-notification.mjs"),
+    "--expected-bot-id", result.origin.botId, "--chat-id", result.origin.chatId,
+    "--message-id", String(result.origin.messageId),
+    "--file", messageFile, "--receipt", path.join(runDir, "notification.json")];
+  if (result.origin.threadId) args.push("--thread-id", result.origin.threadId);
   await runUpdateProcess(process.execPath, args, { timeout: 240_000, maxBuffer: 64 * 1024 });
 } catch (error) {
   // Updating the CLI already has a durable outcome; a notification failure must
   // never rerun activation or send a duplicate after uncertain acceptance.
-  console.error("Codex update notification requires review:", error.message);
+  console.error("Codex update panel edit requires review:", error.message);
 }
 console.log(JSON.stringify({ id: result.id, phase: result.phase }));
