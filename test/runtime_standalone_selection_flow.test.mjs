@@ -35,7 +35,7 @@ function createHarness(initialOptions = {}, options = {}) {
   };
   const edits = [];
   const answers = [];
-  const counters = { saves: 0 };
+  const counters = { saves: 0, deletes: 0 };
   let editSucceeds = true;
   let saveFails = options.saveFails === true;
   const activeTurns = new Map();
@@ -117,6 +117,7 @@ function createHarness(initialOptions = {}, options = {}) {
     },
     ctx() {
       return {
+        deleteMessage: async () => { counters.deletes += 1; return true; },
         answerCbQuery: async (text, extra) => {
           answers.push({ text, extra });
         }
@@ -242,10 +243,12 @@ test("edit and save failures keep the previous options and a cancellable phase",
   assert.equal(saveFailure.edits.at(-1).extra.stage, "reasoning");
 });
 
-test("menu close edits to closed copy and removes the entire keyboard", async () => {
+test("menu close deletes its message without confirmation text or edits", async () => {
   const harness = createHarness();
   harness.activeTurns.set("chat", { id: "active" });
   await harness.closeMenu(harness.ctx());
-  assert.equal(harness.edits.at(-1).html, "menuClosed");
-  assert.deepEqual(harness.edits.at(-1).extra.reply_markup.inline_keyboard, []);
+  assert.equal(harness.counters.deletes, 1);
+  assert.deepEqual(harness.edits, []);
+  assert.deepEqual(harness.answers, [{ text: undefined, extra: undefined }]);
+  assert.equal(harness.activeTurns.get("chat").id, "active");
 });
