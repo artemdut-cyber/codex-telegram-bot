@@ -4,6 +4,11 @@ All notable public changes are documented here.
 
 ## Unreleased
 
+## 1.3.9 - 2026-09-30
+
+- Refresh public Codex SDK/CLI packages and npm dependencies.
+- Skip cleanup candidates that are already missing when execution begins, rather
+  than reporting an `ENOENT` error for files removed after planning.
 - Refresh patched `brace-expansion` and `ip-address` dependencies so security
   audits pass without weakening the audit gate.
 - Delete the menu message when its Close button is pressed, without leaving a
@@ -14,7 +19,6 @@ All notable public changes are documented here.
 - Wait for the worker's status handshake after restart before restarting the
   bot or declaring activation failed. Retry transient socket startup errors
   within a bounded readiness window; retain failure handling for genuine errors.
-
 - Add a Codex Update button below report/backup in Tools → Codex Maintenance.
   Linux standalone updates use the official installer in isolated staging,
   wait for all jobs and final responses, preserve queued requests and user
