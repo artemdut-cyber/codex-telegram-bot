@@ -154,6 +154,7 @@
   "cleanupIgnoredTitle": "✖️ Codex thread cleanup ignored",
   "cleanupNoFilesMoved": "No files were moved or deleted.",
   "cleanupResultTitle": "✅ Cleanup complete: {action}",
+  "cleanupPermanentDeletionNotice": "Permanent deletion creates no backup and cannot be undone. Restore scripts only restore quarantined files.",
   "cleanupResultQuarantined": "Quarantined",
   "cleanupResultDeleted": "Deleted permanently",
   "cleanupResultSkipped": "Protected/skipped",

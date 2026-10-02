@@ -104,6 +104,9 @@ export function createCleanupUi({ telegram, localization, formatting }) {
       msg("ui.manifestLine", { value1: code(result.manifest || msg("ui.none")) }),
       msg("ui.restoreLine", { value1: code(result.restoreScript || msg("ui.none")) })
     ];
+    if (result.deleted > 0) {
+      lines.push("", localization.text("cleanupPermanentDeletionNotice"));
+    }
     if (plan) {
       lines.push(
         "",

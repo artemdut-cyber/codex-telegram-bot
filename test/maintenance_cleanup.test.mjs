@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import {
   buildCleanupArtifactPaths,
   cleanupRestoreScript,
@@ -43,7 +45,7 @@ test("cleanup artifact writes plan, manifest, result, and restore script", async
   assert.match(await fs.readFile(artifact.manifest, "utf8"), /"type":"delete"/);
   assert.equal(JSON.parse(await fs.readFile(path.join(artifact.dir, "result.json"), "utf8")).deleted, 1);
   assert.equal(mode(await fs.stat(artifact.dir)), 0o700);
-  assert.equal(mode(await fs.stat(artifact.deleteBackupDir)), 0o700);
+  await assert.rejects(fs.access(artifact.deleteBackupDir), { code: "ENOENT" });
   for (const file of ["plan.json", "manifest.jsonl", "result.json", "restore-cleanup.py"]) {
     assert.equal(mode(await fs.stat(path.join(artifact.dir, file))), 0o600);
   }
@@ -77,4 +79,29 @@ test("cleanup restore script points at manifest path", () => {
   assert.match(source, /restore-complete\.json/);
   assert.match(source, /manifestSha256/);
   assert.match(source, /finally:/);
+});
+
+test("restore handles quarantines and legacy backups while skipping permanent deletions", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "cleanup-restore-mixed-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const quarantined = path.join(root, "quarantined.jsonl");
+  const restored = path.join(root, "restored.jsonl");
+  const permanentlyDeleted = path.join(root, "deleted.jsonl");
+  const legacyBackup = path.join(root, "legacy-backup.jsonl");
+  const legacyRestored = path.join(root, "legacy-restored.jsonl");
+  await fs.writeFile(quarantined, "quarantine\n");
+  await fs.writeFile(legacyBackup, "legacy\n");
+  const artifact = await createCleanupArtifact({
+    plan: { id: "mixed" }, action: "both", cleanupArtifactDir: root, dateKey: "20260603"
+  });
+  await finalizeCleanupArtifact(artifact, [
+    { type: "quarantine", from: restored, to: quarantined },
+    { type: "delete", from: permanentlyDeleted, irreversible: true },
+    { type: "delete", from: legacyRestored, backup: legacyBackup }
+  ], { deleted: 1, quarantined: 1 });
+  const { stdout } = await promisify(execFile)("python3", [artifact.restoreScript]);
+  assert.match(stdout, /Permanently deleted file cannot be restored/);
+  assert.equal(await fs.readFile(restored, "utf8"), "quarantine\n");
+  assert.equal(await fs.readFile(legacyRestored, "utf8"), "legacy\n");
+  await assert.rejects(fs.access(permanentlyDeleted), { code: "ENOENT" });
 });

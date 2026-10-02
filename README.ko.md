@@ -38,7 +38,7 @@
 - model, reasoning, sandbox, approval, web, language, time zone, locale, runtime override를 inline 버튼으로 설정합니다.
 - raw command log나 reasoning text를 노출하지 않고 짧은 진행 알림을 보냅니다.
 - 끊긴 streamed turn은 다시 실행하기 전에 Codex session log를 확인해 완료 답변을 회수합니다.
-- keep-codex-fast에서 영감을 받은 backup-first cleanup과 로컬 유지보수 도구를 제공합니다.
+- keep-codex-fast에서 영감을 받은 세션 격리·삭제와 backup-first 로컬 유지보수 도구를 제공합니다.
 
 **1.3.0**의 채팅 로그인, 다중 계정 관리, 자동 계정 전환과 **1.3.4**의
 프로젝트·세션·예약 작업·대시보드·MCP 메뉴 및 프로젝트 토픽 기능은
@@ -419,6 +419,15 @@ service를 restart해 반영하는 것을 권장합니다.
 - `CLEANUP_RETENTION_DAYS`보다 오래된 session log는 quarantine 후보가 됩니다.
 - Quarantine된 log 중 `CLEANUP_QUARANTINE_DAYS`보다 오래된 log는 permanent delete 후보가 됩니다.
 - Approval plan은 `CLEANUP_PLAN_TTL_HOURS` 뒤 만료됩니다.
+
+| 옵션 | 파일 처리 |
+| --- | --- |
+| 격리만 | 대상 세션을 격리 폴더로 이동하고 내용은 보관합니다. |
+| 영구 삭제만 | 격리 기간이 지난 파일만 백업 복사 없이 실제 삭제합니다. |
+| 둘 다 | 새 대상은 격리하고, 이미 격리 기간이 지난 파일은 영구 삭제합니다. 방금 격리한 파일의 보관 기간은 유지합니다. |
+
+삭제 직전 격리 시각과 보호 대상 세션을 다시 확인합니다. 작은 작업 계획·결과·처리 기록만 남기며, 삭제한 세션 내용은 보관하지 않습니다.
+복원 스크립트는 격리한 파일을 복원합니다. 과거 백업을 만든 삭제 기록은 호환되지만, 새 영구 삭제 파일은 복원할 수 없습니다.
 
 수동 검토는 `/cleanup`으로 할 수 있습니다.
 Cleanup runtime 메뉴에서도 실행 모드를 바꿀 수 있습니다. `delete` 또는 `both`로 변경할 때는 한 번 확인하지만, 이후 매일 실행할 때는 다시 묻지 않습니다.

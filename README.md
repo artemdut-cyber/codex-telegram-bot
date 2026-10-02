@@ -38,7 +38,7 @@
 - Provides inline settings for model, reasoning, sandbox, approval, web, language, time zone, locale, and runtime overrides.
 - Sends short progress updates without streaming raw command logs or reasoning text.
 - Recovers interrupted streamed turns by checking Codex session logs before retrying work.
-- Adds backup-first cleanup and local maintenance tools inspired by keep-codex-fast.
+- Adds quarantine-based session cleanup and backup-first local maintenance tools inspired by keep-codex-fast.
 
 The chat sign-in, multiple-account management, and automatic account rotation
 introduced in **1.3.0**, along with the project, session, scheduled-task,
@@ -521,6 +521,17 @@ Default policy:
 - Session logs older than `CLEANUP_RETENTION_DAYS` become quarantine candidates.
 - Quarantined logs older than `CLEANUP_QUARANTINE_DAYS` become permanent delete candidates.
 - Approval plans expire after `CLEANUP_PLAN_TTL_HOURS`.
+
+| Option | File handling |
+| --- | --- |
+| Quarantine only | Move eligible session logs into quarantine; retain their content. |
+| Permanently delete only | Delete only quarantined logs whose quarantine period has elapsed, without making backup copies. |
+| Both | Quarantine eligible sessions and permanently delete already expired quarantine files. Newly quarantined files keep their quarantine period. |
+
+Deletion rechecks the quarantine timestamp and protected thread IDs when executed.
+Small plan/result/operation records remain; deleted session content is not retained.
+Restore scripts restore quarantined files only; legacy backed-up deletion records
+remain compatible, but new permanent deletions cannot be restored.
 
 Manual review is available with `/cleanup`.
 The Cleanup runtime menu can change the execution mode. Selecting `delete` or

@@ -154,6 +154,7 @@
   "cleanupIgnoredTitle": "✖️ Codex thread cleanup 무시됨",
   "cleanupNoFilesMoved": "파일은 이동/삭제되지 않았습니다.",
   "cleanupResultTitle": "✅ Cleanup 처리 완료: {action}",
+  "cleanupPermanentDeletionNotice": "영구 삭제는 백업을 만들지 않으며 복원할 수 없습니다. 복원 스크립트는 격리한 파일만 복원합니다.",
   "cleanupResultQuarantined": "격리 완료",
   "cleanupResultDeleted": "영구 삭제 완료",
   "cleanupResultSkipped": "보호/스킵",

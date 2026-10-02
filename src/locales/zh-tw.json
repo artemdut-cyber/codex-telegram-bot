@@ -144,6 +144,7 @@
   "cleanupIgnoredTitle": "✖️ 已忽略 Codex thread 清理",
   "cleanupNoFilesMoved": "沒有檔案被移動或刪除。",
   "cleanupResultTitle": "✅ 清理完成：{action}",
+  "cleanupPermanentDeletionNotice": "永久刪除不建立備份，無法復原。復原腳本只還原隔離的檔案。",
   "cleanupResultQuarantined": "已隔離",
   "cleanupResultDeleted": "已永久刪除",
   "cleanupResultSkipped": "受保護/略過",

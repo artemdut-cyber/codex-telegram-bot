@@ -125,6 +125,7 @@ test("cleanup callback rendering keeps the action and candidate totals", () => {
   });
   assert.match(html, /Quarantine \+ delete/);
   assert.match(html, /manifest\.json/);
+  assert.match(html, /Permanent deletion creates no backup/);
 });
 
 test("cleanup runtime facade preserves inventory, scheduler, and UI methods", () => {

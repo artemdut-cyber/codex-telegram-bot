@@ -25,7 +25,6 @@ export async function createCleanupArtifact({ plan, action, cleanupArtifactDir, 
     action
   });
   await ensurePrivateDirectory(artifact.dir);
-  await ensurePrivateDirectory(artifact.deleteBackupDir);
   await writePrivateFile(path.join(artifact.dir, "plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
   await writePrivateFile(artifact.restoreScript, cleanupRestoreScript(artifact.manifest), "utf8");
   return artifact;
@@ -105,13 +104,16 @@ try:
             raise RuntimeError("manifest identity changed while reading")
         for line in manifest_bytes.decode("utf-8", errors="strict").splitlines():
             rec = json.loads(line)
+            if rec.get("type") == "delete" and not rec.get("backup"):
+                print("Permanently deleted file cannot be restored; skipping.")
+                continue
             if rec.get("type") == "quarantine":
                 src = Path(rec["to"])
                 dest = Path(rec["from"])
                 if src.exists():
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(src), str(dest))
-            elif rec.get("type") == "delete":
+            elif rec.get("type") == "delete" and rec.get("backup"):
                 src = Path(rec["backup"])
                 dest = Path(rec["from"])
                 if src.exists():

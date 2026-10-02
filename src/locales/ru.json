@@ -147,6 +147,7 @@
   "cleanupIgnoredTitle": "✖️ Очистка диалогов Codex пропущена",
   "cleanupNoFilesMoved": "Файлы не были перемещены или удалены.",
   "cleanupResultTitle": "✅ Очистка завершена: {action}",
+  "cleanupPermanentDeletionNotice": "Безвозвратное удаление не создает резервных копий. Скрипт восстановления возвращает только файлы из карантина.",
   "cleanupResultQuarantined": "Помещено в карантин",
   "cleanupResultDeleted": "Удалено безвозвратно",
   "cleanupResultSkipped": "Защищено/пропущено",

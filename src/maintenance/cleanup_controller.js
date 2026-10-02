@@ -2,7 +2,6 @@ import { createMessageFormatter } from "../i18n.js";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
-  copyCleanupBackup,
   createCleanupArtifact,
   finalizeCleanupArtifact
 } from "./cleanup.js";
@@ -255,6 +254,9 @@ export function createCleanupController({
   }
 
   async function applyCleanupPlan(plan, action) {
+    if (!["quarantine", "delete", "both"].includes(action)) {
+      throw new Error(`Unsupported cleanup action: ${action}`);
+    }
     const result = { quarantined: 0, deleted: 0, skipped: 0, errors: [] };
     const artifact = await createCleanupArtifact({
       plan,
@@ -264,7 +266,7 @@ export function createCleanupController({
     });
     result.artifactDir = artifact.dir;
     result.manifest = artifact.manifest;
-    result.restoreScript = artifact.restoreScript;
+    result.restoreScript = "none";
     const operations = [];
     const protectedThreadIds = await inventory.collectProtectedThreadIds();
     const sessionsRoot = path.resolve(policy.sessionsDir);
@@ -322,28 +324,38 @@ export function createCleanupController({
       const quarantineRoot = path.resolve(policy.quarantineDir);
       for (const candidate of plan.deleteCandidates) {
         try {
+          if (protectedThreadIds.has(candidate.threadId)) {
+            result.skipped += 1;
+            continue;
+          }
           const deletePath = path.resolve(candidate.path);
           if (!isPathInside(deletePath, quarantineRoot)) {
             throw new Error(`Refusing to delete outside quarantine dir: ${candidate.path}`);
           }
-          const relativePath = path.relative(quarantineRoot, deletePath);
-          const backupPath = path.join(artifact.deleteBackupDir, relativePath);
-          await copyCleanupBackup(deletePath, backupPath);
-          await copyCleanupBackup(
-            `${deletePath}.cleanup.json`,
-            `${backupPath}.cleanup.json`
-          ).catch((error) => {
-            if (error?.code !== "ENOENT") throw error;
-          });
-          await fs.rm(deletePath, { force: true });
-          await fs.rm(`${deletePath}.cleanup.json`, { force: true });
+          const stat = await fs.lstat(deletePath);
+          if (!stat.isFile() || await fs.realpath(deletePath) !== deletePath) {
+            throw new Error(`Refusing to delete a non-regular or linked quarantine file: ${candidate.path}`);
+          }
+          const metadata = await readQuarantineMetadata(deletePath);
+          const quarantinedAt = metadata?.quarantinedAt
+            ? Date.parse(metadata.quarantinedAt)
+            : stat.mtimeMs;
+          const cutoff = now().getTime() - policy.quarantineDays() * 86_400_000;
+          if (!Number.isFinite(quarantinedAt) || quarantinedAt >= cutoff
+              || protectedThreadIds.has(metadata?.threadId)) {
+            result.skipped += 1;
+            continue;
+          }
+          // Permanent deletion retains only the small operation receipt, never a payload copy.
+          await fs.unlink(deletePath);
           operations.push({
             type: "delete",
             threadId: candidate.threadId,
             from: deletePath,
-            backup: backupPath
+            irreversible: true
           });
           result.deleted += 1;
+          await fs.rm(`${deletePath}.cleanup.json`, { force: true });
         } catch (error) {
           if (error?.code === "ENOENT" && await sourceIsMissing(candidate.path)) {
             result.skipped += 1;
@@ -356,6 +368,9 @@ export function createCleanupController({
       }
     }
 
+    if (operations.some((operation) => operation.type === "quarantine")) {
+      result.restoreScript = artifact.restoreScript;
+    }
     await finalizeCleanupArtifact(artifact, operations, result);
     return result;
   }
@@ -395,6 +410,18 @@ export function createCleanupController({
     sendDailyCleanupPlan,
     summarizeCleanupPlan
   };
+}
+
+async function readQuarantineMetadata(file) {
+  const metadataPath = `${file}.cleanup.json`;
+  try {
+    const stat = await fs.lstat(metadataPath);
+    if (!stat.isFile()) throw new Error("Quarantine metadata must be a regular file");
+    return JSON.parse(await fs.readFile(metadataPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 async function sourceIsMissing(file) {
