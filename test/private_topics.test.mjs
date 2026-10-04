@@ -52,6 +52,15 @@ async function fixture(t, options = {}) {
   return { ...f, mode, ctx, add, create, forum, group: () => f.state.forum.groups["1"] };
 }
 
+async function privateProjectTopics(t) {
+  const f = await fixture(t);
+  await f.send("/forum_setup");
+  const first = await f.create("First");
+  const second = await f.create("Second");
+  assert.equal(f.group().chatType, "private");
+  return { f, first, second };
+}
+
 test("private topic setup guides BotFather and refreshes enabled state without a restart", async (t) => {
   const f = await fixture(t, { enabled: false });
   await f.send("/topics");
@@ -120,6 +129,79 @@ test("private project wizard creates real topic 1 and isolates folders, accounts
   assert.equal(f.r.getChatState(key).threadId, "project-session");
   assert.equal(f.r.getChatState("1").threadId, "original");
   assert.equal(f.r.getChatState("1").accountId, "default");
+});
+
+test("ordinary text in private Topic B reaches Codex while Topic A keeps its active workspace input", async (t) => {
+  const { f, first, second } = await privateProjectTopics(t);
+  await f.send("/projects", { threadId: first.id });
+  await f.press("경로 입력");
+  const flowKey = `1:${first.id}:1`;
+  const promptId = f.messages.at(-1).message_id;
+  assert.equal(f.messages.at(-1).chat.type, "private");
+  assert.equal(f.messages.at(-1).message_thread_id, first.id);
+  assert.equal(f.state.workspace.flows[flowKey]?.replyPromptMessageId, promptId);
+
+  await f.send("ordinary input from private Topic B", { threadId: second.id });
+
+  assert.deepEqual(f.forwarded, ["ordinary input from private Topic B"]);
+  assert.equal(f.state.workspace.flows[flowKey]?.data.awaiting, true);
+  assert.ok(!f.messages.at(-1).text.includes("진행 중인 입력 요청과 연결되지 않았습니다"));
+});
+
+test("reply to an old bot message in a private project topic reaches Codex as ordinary input", async (t) => {
+  const { f, first } = await privateProjectTopics(t);
+  await f.send("/projects", { threadId: first.id });
+  const oldBotMessage = globalThis.structuredClone(f.messages.at(-1));
+  assert.equal(oldBotMessage.chat.type, "private");
+  assert.equal(oldBotMessage.message_thread_id, first.id);
+
+  await f.send("work from a stale private-topic reply", { threadId: first.id, replyTo: oldBotMessage });
+
+  assert.deepEqual(f.forwarded, ["work from a stale private-topic reply"]);
+});
+
+test("reply to an expired ForceReply in a private project topic reaches Codex as ordinary input", async (t) => {
+  const { f, first } = await privateProjectTopics(t);
+  await f.send("/projects", { threadId: first.id });
+  await f.press("경로 입력");
+  const prompt = globalThis.structuredClone(f.messages.at(-1));
+  assert.equal(prompt.chat.type, "private");
+  assert.equal(prompt.message_thread_id, first.id);
+  f.clock.now += 16 * 60_000;
+
+  await f.send("work after private ForceReply expiration", { threadId: first.id, replyTo: prompt });
+
+  assert.deepEqual(f.forwarded, ["work after private ForceReply expiration"]);
+  assert.equal(f.state.workspace.flows[`1:${first.id}:1`]?.data.awaiting, undefined);
+});
+
+test("exact active ForceReply in its private topic is consumed by workspace UI", async (t) => {
+  const { f, first } = await privateProjectTopics(t);
+  await f.send("/projects", { threadId: first.id });
+  await f.press("경로 입력");
+  const prompt = globalThis.structuredClone(f.messages.at(-1));
+  assert.equal(prompt.chat.type, "private");
+  assert.equal(prompt.message_thread_id, first.id);
+
+  await f.send(f.root, { threadId: first.id, replyTo: prompt });
+
+  assert.deepEqual(f.forwarded, []);
+  assert.equal(f.state.workspace.flows[`1:${first.id}:1`]?.data.awaiting, undefined);
+});
+
+test("reply to Topic A's active private ForceReply from Topic B gets context mismatch and preserves the flow", async (t) => {
+  const { f, first, second } = await privateProjectTopics(t);
+  await f.send("/projects", { threadId: first.id });
+  await f.press("경로 입력");
+  const prompt = globalThis.structuredClone(f.messages.at(-1));
+  const flowKey = `1:${first.id}:1`;
+  assert.equal(prompt.chat.type, "private");
+
+  await f.send("cross-topic private reply", { threadId: second.id, replyTo: prompt });
+
+  assert.deepEqual(f.forwarded, []);
+  assert.match(f.messages.at(-1).text, /진행 중인 입력 요청과 연결되지 않았습니다/);
+  assert.equal(f.state.workspace.flows[flowKey]?.data.awaiting, true);
 });
 
 test("private topic bindings survive state reload and reconstruct deleted preferences in topic 1", async (t) => {

@@ -155,12 +155,57 @@ test("workspace prompt replies correlate only to their own project topic", async
   assert.equal(f.state.workspace.flows[`${second.chatId}:22:1`]?.replyPromptMessageId, secondPrompt.message_id);
 });
 
-test("unmatched Desktop context input is rejected without forwarding into another project", async (t) => {
+test("reply to an old bot message without an active UI flow is forwarded to Codex", async (t) => {
+  const f = await runtimeRoutesFixture(t);
+  const topic = { chatId: -10042, threadId: 21, chatType: "supergroup", isForum: true };
+  await f.send("/projects", topic);
+  const oldBotMessage = globalThis.structuredClone(f.messages.at(-1));
+  await f.send("work from an old reply", { ...topic, replyTo: oldBotMessage });
+  assert.deepEqual(f.forwarded, ["work from an old reply"]);
+});
+
+test("reply to an expired ForceReply prompt is forwarded as ordinary input", async (t) => {
   const f = await runtimeRoutesFixture(t);
   const topic = { chatId: -10042, threadId: 21, chatType: "supergroup", isForum: true };
   await f.send("/projects", topic);
   await f.press("경로 입력");
-  await f.send(f.root, { ...topic, threadId: undefined });
+  const prompt = globalThis.structuredClone(f.messages.at(-1));
+  f.clock.now += 16 * 60_000;
+  await f.send("work after expiration", { ...topic, replyTo: prompt });
+  assert.deepEqual(f.forwarded, ["work after expiration"]);
+});
+
+test("awaiting workspace input in one private topic does not block another topic", async (t) => {
+  const f = await runtimeRoutesFixture(t);
+  const first = { chatId: -10042, threadId: 21, chatType: "supergroup", isForum: true };
+  const second = { ...first, threadId: 22 };
+  await f.send("/projects", first);
+  await f.press("경로 입력");
+  const key = `${first.chatId}:21:1`;
+  await f.send("ordinary input in topic B", second);
+  assert.deepEqual(f.forwarded, ["ordinary input in topic B"]);
+  assert.equal(f.state.workspace.flows[key]?.data.awaiting, true);
+});
+
+test("exact active ForceReply prompt in its topic is consumed by workspace UI", async (t) => {
+  const f = await runtimeRoutesFixture(t);
+  const topic = { chatId: -10042, threadId: 21, chatType: "supergroup", isForum: true };
+  await f.send("/projects", topic);
+  await f.press("경로 입력");
+  const prompt = globalThis.structuredClone(f.messages.at(-1));
+  await f.send(f.root, { ...topic, replyTo: prompt });
+  assert.deepEqual(f.forwarded, []);
+  assert.equal(f.state.workspace.flows[`${topic.chatId}:21:1`]?.data.awaiting, undefined);
+});
+
+test("reply to active ForceReply from a different topic gets context mismatch", async (t) => {
+  const f = await runtimeRoutesFixture(t);
+  const topic = { chatId: -10042, threadId: 21, chatType: "supergroup", isForum: true };
+  const otherTopic = { ...topic, threadId: 22 };
+  await f.send("/projects", topic);
+  await f.press("경로 입력");
+  const prompt = globalThis.structuredClone(f.messages.at(-1));
+  await f.send("wrong topic reply", { ...otherTopic, replyTo: prompt });
   assert.equal(f.state.workspace.flows[`${topic.chatId}:21:1`]?.data.awaiting, true);
   assert.deepEqual(f.forwarded, []);
   assert.match(f.messages.at(-1).text, /진행 중인 입력 요청과 연결되지 않았습니다/);

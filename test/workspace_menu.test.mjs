@@ -33,23 +33,26 @@ test("workspace input accepts normal same-topic text and posts an explicit Force
   assert.equal(prompt.message_id, flow.replyPromptMessageId);
 });
 
-test("reply prompt message id restores its original workspace flow across a changed Telegram topic id", async (t) => {
+test("reply to an active prompt from a different topic is rejected", async (t) => {
   const f = await workspaceFixture(t);
   const { flow, prompt } = await beginProjectNameInput(f, { threadId: 41 });
   await f.send("Routed by prompt", { threadId: 99, replyTo: prompt });
-  assert.equal(f.state.workspace.projects["1:41:1"].some((project) => project.name === "Routed by prompt"), true);
+  assert.equal(f.state.workspace.projects["1:41:1"]?.some((project) => project.name === "Routed by prompt"), false);
   assert.equal(f.state.workspace.projects["1:99:1"], undefined);
   assert.equal(flow.data.awaiting, true);
+  assert.match(f.messages.at(-1).text, /연결되지 않았습니다|does not match|не связано/);
 });
 
-test("two pending workspace flows remain isolated and route only by their exact prompt ids", async (t) => {
+test("two pending workspace flows reject a prompt reply from the other topic", async (t) => {
   const f = await workspaceFixture(t);
   const first = await beginProjectNameInput(f, { threadId: 41 });
   const second = await beginProjectNameInput(f, { threadId: 42 });
   await f.send("Second project", { threadId: 41, replyTo: second.prompt });
-  assert.equal(f.state.workspace.projects["1:42:1"].some((project) => project.name === "Second project"), true);
+  assert.equal(f.state.workspace.projects["1:42:1"]?.some((project) => project.name === "Second project"), false);
   assert.equal(f.state.workspace.projects["1:41:1"]?.length || 0, 0);
   assert.ok(first.flow.data.awaiting);
+  assert.ok(second.flow.data.awaiting);
+  assert.match(f.messages.at(-1).text, /연결되지 않았습니다|does not match|не связано/);
 });
 
 test("reply to an unrelated bot message is rejected while a workspace input is pending", async (t) => {
@@ -61,12 +64,12 @@ test("reply to an unrelated bot message is rejected while a workspace input is p
   assert.equal(Object.values(f.state.workspace.projects).flat().length, 0);
 });
 
-test("reply to an expired workspace input prompt is rejected", async (t) => {
+test("reply to an expired workspace input prompt is forwarded as ordinary input", async (t) => {
   const f = await workspaceFixture(t);
   const { prompt } = await beginProjectNameInput(f, { threadId: 41 });
   f.clock.now += 16 * 60_000;
   await f.send("Too late", { threadId: 99, replyTo: prompt });
-  assert.match(f.messages.at(-1).text, /만료|expired/);
+  assert.deepEqual(f.forwarded, ["Too late"]);
   assert.equal(Object.values(f.state.workspace.projects).flat().length, 0);
 });
 
