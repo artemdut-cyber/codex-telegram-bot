@@ -242,6 +242,47 @@ const waitForAbort = async ({ signal }) => {
   if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
 };
 
+test("a sidecar job survives bot-client disconnect and a replacement client reattaches", async () => {
+  let release, signalStarted, starts = 0;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const started = new Promise((resolve) => { signalStarted = resolve; });
+  const executor = async ({ job, store, signal }) => {
+    starts += 1;
+    await store.appendJobEvent(job.id, { type: "worker.job.running", status: "running", chatKey: job.chatKey });
+    signalStarted();
+    await gate;
+    if (!signal.aborted) await store.appendJobEvent(job.id, { type: "worker.job.completed", status: "completed", chatKey: job.chatKey });
+  };
+  const { config, worker, client, store } = await startServer(executor);
+  try {
+    assert.deepEqual(await client.startJob({ id: "bot-reconnect", chatKey: "chat", inputText: "continue" }),
+      { jobId: "bot-reconnect", status: "accepted" });
+    await started;
+
+    // Each RPC uses a short-lived Unix socket. A replacement bot process gets
+    // a fresh client and resumes reading the same durable sidecar job.
+    const replacementClient = createWorkerClient(config);
+    const status = await replacementClient.status();
+    assert.deepEqual(status.activeJobs.map((job) => job.id), ["bot-reconnect"]);
+    assert.deepEqual(status.runningJobIds, ["bot-reconnect"]);
+    assert.equal((await replacementClient.getJobStatus("bot-reconnect")).job.status, "running");
+    assert.equal(starts, 1);
+
+    release();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = await replacementClient.getJobStatus("bot-reconnect");
+      if (current.job.status === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal((await store.readJobState("bot-reconnect")).status, "completed");
+    assert.equal(starts, 1);
+  } finally {
+    release();
+    await worker.close();
+    await fs.rm(config.codexWorkerStateDir, { recursive: true, force: true });
+  }
+});
+
 test("a read barrier cannot admit two simultaneous requests for the same chat", async (t) => {
   let starts = 0, reads = 0, release, entered;
   const gate = new Promise((resolve) => { release = resolve; });
