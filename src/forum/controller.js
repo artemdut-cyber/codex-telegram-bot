@@ -38,7 +38,6 @@ export function createForumMenus(r, { ui, accounts, text, now = Date.now }) {
     }
     service.group(ctx);
     const personal = forumChatType(group) === "private";
-    await service.reconcileTopics(group, ctx.from.id);
     const topics = allowedTopics(ctx, group);
     const rows = topics.slice(page * PAGE, (page + 1) * PAGE).map((topic) => [btn(`${topic.closed ? "⏸" : topic.cwd || topic.role !== "project" ? "🏷" : "⚠️"} ${topic.name}`, "forum-topic", { id: topic.id })]);
     const paging = [];
