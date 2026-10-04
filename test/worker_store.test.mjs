@@ -103,3 +103,194 @@ test("worker store falls back from corrupt active job state", async () => {
   assert.equal(mode(await fs.stat(path.join(dir, "corrupt"))), 0o700);
   assert.equal(mode(await fs.stat(path.join(dir, "corrupt", corruptFiles[0]))), 0o600);
 });
+
+test("event log repairs lastSeq after append commits and state rename fails", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.writeJobState({ id: "fault", chatKey: "chat", status: "accepted" });
+  const rename = fs.rename;
+  let fail = true;
+  t.mock.method(fs, "rename", async (from, to) => {
+    if (to === path.join(store.paths.jobsDir, "fault.json") && fail) {
+      fail = false;
+      throw Object.assign(new Error("injected state EIO"), { code: "EIO" });
+    }
+    return rename(from, to);
+  });
+  await assert.rejects(store.appendJobEvent("fault", { type: "worker.job.started" }), { code: "EVENT_COMMITTED", committedSeq: 1 });
+  assert.equal(JSON.parse(await fs.readFile(path.join(store.paths.jobsDir, "fault.json"))).lastSeq, undefined);
+  const restarted = createWorkerStore({ codexWorkerStateDir: dir });
+  assert.equal((await restarted.readJobState("fault")).lastSeq, 1);
+  assert.equal((await restarted.readJobState("fault")).status, "running");
+  assert.equal((await restarted.appendJobEvent("fault", { type: "item.completed", text: "한🙂" })).seq, 2);
+  assert.deepEqual((await restarted.readJobEvents("fault", { afterSeq: 1 })).map((e) => e.seq), [2]);
+  assert.equal((await restarted.readJobState("fault")).lastSeq, 2);
+});
+
+test("partial records are preserved in quarantine then trimmed before append", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.writeJobState({ id: "tail", status: "running" });
+  await store.appendJobEvent("tail", { type: "worker.job.started" });
+  const file = path.join(store.paths.eventsDir, "tail.jsonl");
+  for (const tail of [Buffer.from('{"seq":2,"text":"🙂').subarray(0, -2), Buffer.from('{"seq":99}')]) {
+    await fs.appendFile(file, tail);
+    const restarted = createWorkerStore({ codexWorkerStateDir: dir });
+    const before = await restarted.readJobState("tail");
+    const cursor = before.lastSeq;
+    assert.deepEqual(await restarted.readJobEvents("tail", { afterSeq: cursor }), []);
+    const next = await restarted.appendJobEvent("tail", { type: "worker.heartbeat", status: "running" });
+    assert.equal(next.seq, cursor + 1);
+    assert.deepEqual((await restarted.readJobEvents("tail", { afterSeq: cursor })).map((e) => e.seq), [cursor + 1]);
+  }
+  assert.equal((await fs.readdir(store.paths.corruptDir)).length, 2);
+});
+
+test("completed duplicate event sequences block appends without rewriting the log", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(store.paths.eventsDir, "duplicate.jsonl");
+  const original = '{"seq":1}\n{"seq":1}\n';
+  await fs.writeFile(file, original);
+  await assert.rejects(store.appendJobEvent("duplicate", { type: "worker.heartbeat" }), { code: "EWORKERSTATE" });
+  assert.equal(await fs.readFile(file, "utf8"), original);
+});
+
+test("ENOENT rebuilds active jobs, JSON corruption preserves jobs and cursor", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  assert.deepEqual((await store.readActiveJobs()).jobs, {});
+  await store.writeJobState({ id: "live", chatKey: "chat", status: "running" });
+  await store.appendJobEvent("live", { type: "worker.job.started", status: "running" });
+  for (const damage of ["missing", "syntax", "shape"]) {
+    if (damage === "missing") await fs.rm(store.paths.activeJobs);
+    else await fs.writeFile(store.paths.activeJobs, damage === "syntax" ? "{bad" : '{"jobs":[]}');
+    const restarted = createWorkerStore({ codexWorkerStateDir: dir });
+    const active = await restarted.readActiveJobs();
+    assert.equal(active.jobs.live.chatKey, "chat");
+    assert.equal(active.jobs.live.lastSeq, 1);
+    assert.deepEqual((await restarted.readJobEvents("live")).map((e) => e.seq), [1]);
+  }
+});
+
+test("EACCES/EIO reads propagate and cannot overwrite active or job files", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.writeJobState({ id: "live", chatKey: "chat", status: "running" });
+  await store.upsertActiveJob({ id: "live", chatKey: "chat", status: "running" });
+  const readFile = fs.readFile;
+  for (const file of [store.paths.activeJobs, path.join(store.paths.jobsDir, "live.json")]) {
+    const before = await readFile(file, "utf8");
+    for (const code of ["EACCES", "EIO"]) {
+      const mock = t.mock.method(fs, "readFile", async (target, ...args) => {
+        if (target === file) throw Object.assign(new Error(`injected ${code}`), { code });
+        return readFile(target, ...args);
+      });
+      const action = file === store.paths.activeJobs ? () => store.upsertActiveJob({ id: "new", chatKey: "new", status: "accepted" }) : () => store.writeJobState({ id: "live", status: "completed" });
+      await assert.rejects(action, { code });
+      mock.mock.restore();
+      assert.equal(await readFile(file, "utf8"), before);
+    }
+  }
+});
+
+test("quarantine rename and recovery write failures preserve original and resume safely", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.writeJobState({ id: "live", chatKey: "chat", status: "running" });
+  await fs.writeFile(store.paths.activeJobs, "{bad");
+  const rename = fs.rename;
+  for (const failure of ["quarantine", "index"]) {
+    const mock = t.mock.method(fs, "rename", async (from, to) => {
+      if (failure === "quarantine" ? String(to).endsWith(".corrupt") : to === store.paths.activeJobs) {
+        throw Object.assign(new Error("injected rename EIO"), { code: "EIO" });
+      }
+      return rename(from, to);
+    });
+    await assert.rejects(store.readActiveJobs(), { code: "EIO" });
+    mock.mock.restore();
+    assert.equal(await fs.readFile(store.paths.activeJobs, "utf8"), "{bad");
+  }
+  assert.equal((await createWorkerStore({ codexWorkerStateDir: dir }).readActiveJobs()).jobs.live.status, "running");
+});
+
+test("corrupt job state blocks reconstruction and repeated writes until explicitly repaired", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(store.paths.jobsDir, "live.json");
+  await fs.writeFile(file, "{bad");
+  await fs.writeFile(store.paths.activeJobs, "{bad index");
+  for (const action of [() => store.readActiveJobs(), () => store.writeJobState({ id: "live", status: "accepted" }), () => store.writeJobState({ id: "live", status: "accepted" })]) {
+    await assert.rejects(action, { code: "EWORKERSTATE" });
+    assert.equal(await fs.readFile(file, "utf8"), "{bad");
+    assert.equal(await fs.readFile(store.paths.activeJobs, "utf8"), "{bad index");
+  }
+  await fs.writeFile(file, JSON.stringify({ id: "live", chatKey: "chat", status: "running" }));
+  assert.equal((await store.readActiveJobs()).jobs.live.status, "running");
+});
+
+test("JSON null is corruption, never an ENOENT fallback for an existing job", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(store.paths.jobsDir, "null-job.json");
+  await fs.writeFile(file, "null");
+  await assert.rejects(store.writeJobState({ id: "null-job", status: "accepted" }), { code: "EWORKERSTATE" });
+  assert.equal(await fs.readFile(file, "utf8"), "null");
+});
+
+test("an interrupted recovery retries from job files when the index is still absent", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.writeJobState({ id: "live", chatKey: "chat", status: "running" });
+  const rename = fs.rename;
+  const mock = t.mock.method(fs, "rename", async (from, to) => {
+    if (to === store.paths.activeJobs) throw Object.assign(new Error("injected EIO"), { code: "EIO" });
+    return rename(from, to);
+  });
+  await assert.rejects(store.readActiveJobs(), { code: "EIO" });
+  mock.mock.restore();
+  assert.equal((await createWorkerStore({ codexWorkerStateDir: dir }).readActiveJobs()).jobs.live.status, "running");
+});
+
+test("failed partial-log quarantine never trims bytes, and recovery can restart before append", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.writeJobState({ id: "recover", status: "running" });
+  await store.appendJobEvent("recover", { type: "worker.job.started" });
+  const file = path.join(store.paths.eventsDir, "recover.jsonl");
+  await fs.appendFile(file, '{"seq":2,"text":"partial');
+  const before = await fs.readFile(file, "utf8"), rename = fs.rename;
+  const failedQuarantine = t.mock.method(fs, "rename", async (from, to) => {
+    if (String(to).endsWith(".corrupt")) throw Object.assign(new Error("injected EACCES"), { code: "EACCES" });
+    return rename(from, to);
+  });
+  await assert.rejects(store.appendJobEvent("recover", { type: "worker.heartbeat" }), { code: "EACCES" });
+  failedQuarantine.mock.restore();
+  assert.equal(await fs.readFile(file, "utf8"), before);
+  const open = fs.open;
+  const interruptedAppend = t.mock.method(fs, "open", async (target, flags, ...args) => {
+    if (target === file && flags === "a") throw Object.assign(new Error("injected EIO"), { code: "EIO" });
+    return open(target, flags, ...args);
+  });
+  await assert.rejects(store.appendJobEvent("recover", { type: "worker.heartbeat" }), { code: "EIO" });
+  interruptedAppend.mock.restore();
+  const restarted = createWorkerStore({ codexWorkerStateDir: dir });
+  assert.equal((await restarted.appendJobEvent("recover", { type: "worker.heartbeat" })).seq, 2);
+  assert.deepEqual((await restarted.readJobEvents("recover", { afterSeq: 1 })).map((e) => e.seq), [2]);
+});
+
+test("a truncated or missing ledger cannot reuse sequence numbers below a persisted cursor", async (t) => {
+  const { dir, store } = await tempStore();
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await store.writeJobState({ id: "lost", status: "running" });
+  await store.appendJobEvent("lost", { type: "worker.job.started" });
+  const file = path.join(store.paths.eventsDir, "lost.jsonl");
+  const original = await fs.readFile(path.join(store.paths.jobsDir, "lost.json"), "utf8");
+  await fs.truncate(file, 0);
+  for (const exists of [true, false]) {
+    if (!exists) await fs.rm(file);
+    await assert.rejects(store.readJobState("lost"), /behind the persisted cursor/);
+    await assert.rejects(store.appendJobEvent("lost", { type: "worker.heartbeat" }), /behind the persisted cursor/);
+    assert.equal(await fs.readFile(path.join(store.paths.jobsDir, "lost.json"), "utf8"), original);
+  }
+});

@@ -237,3 +237,175 @@ test("worker server starts, rejects duplicate chat jobs, and cancels", async () 
     await worker.close();
   }
 });
+
+const waitForAbort = async ({ signal }) => {
+  if (!signal.aborted) await new Promise((resolve) => signal.addEventListener("abort", resolve, { once: true }));
+};
+
+test("a read barrier cannot admit two simultaneous requests for the same chat", async (t) => {
+  let starts = 0, reads = 0, release, entered;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const firstRead = new Promise((resolve) => { entered = resolve; });
+  t.after(() => release());
+  const { worker, client, store } = await startServer(async (args) => { starts += 1; await waitForAbort(args); });
+  const read = store.readActiveJobs;
+  store.readActiveJobs = async () => {
+    const snapshot = await read();
+    reads += 1;
+    entered();
+    await gate;
+    return snapshot;
+  };
+  try {
+    const first = client.startJob({ id: "race-a", chatKey: "same" });
+    await firstRead;
+    const second = client.startJob({ id: "race-b", chatKey: "same" });
+    // Both sockets can dispatch while the first store read is paused. Admission
+    // serializes the read/check/reservation, rather than only the final write.
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(reads, 1);
+    release();
+    const results = await Promise.allSettled([first, second]);
+    assert.equal(results.filter((r) => r.status === "fulfilled").length, 1);
+    assert.match(results.find((r) => r.status === "rejected").reason.message, /Active worker job already exists/);
+    assert.equal(starts, 1);
+  } finally { release(); await worker.close(); }
+});
+
+test("different chats run concurrently and same-ID retries execute once", async () => {
+  let starts = 0;
+  const { worker, client, store } = await startServer(async (args) => { starts += 1; await waitForAbort(args); });
+  try {
+    const job = { id: "idempotent", chatKey: "chat-a", inputText: "한🙂" };
+    const [a, retry, b] = await Promise.all([
+      client.startJob(job), client.startJob({ inputText: "한🙂", chatKey: "chat-a", id: "idempotent" }),
+      client.startJob({ id: "parallel", chatKey: "chat-b" })
+    ]);
+    assert.deepEqual(a, retry);
+    assert.equal(b.status, "accepted");
+    assert.equal(starts, 2);
+    assert.equal((await client.status()).runningJobIds.length, 2);
+    assert.equal((await store.readJobEvents(job.id)).filter((e) => e.type === "worker.job.accepted").length, 1);
+    await assert.rejects(client.startJob({ ...job, inputText: "different" }), /different request/);
+    await assert.rejects(client.startJob({ ...job, chatKey: "chat-c" }), /different request/);
+  } finally { await worker.close(); }
+});
+
+test("completed same-ID retries return the persisted result without executing again", async () => {
+  let starts = 0, finished;
+  const completion = new Promise((resolve) => { finished = resolve; });
+  const { worker, client } = await startServer(async ({ store, job }) => {
+    starts += 1;
+    await store.appendJobEvent(job.id, { type: "worker.job.completed", status: "completed" });
+    finished();
+  });
+  const job = { id: "complete-retry", chatKey: "chat" };
+  try {
+    await client.startJob(job);
+    await completion;
+    assert.deepEqual(await client.startJob(job), { jobId: job.id, status: "completed" });
+    assert.equal(starts, 1);
+  } finally { await worker.close(); }
+});
+
+test("admission failures rollback without executing and allow a new ID", async () => {
+  for (const scenario of ["writeJobState", "upsertActiveJob", "appendJobEvent", "appendCommitted"]) {
+    const operation = scenario === "appendCommitted" ? "appendJobEvent" : scenario;
+    let starts = 0;
+    const { worker, client, store } = await startServer(async (args) => { starts += 1; await waitForAbort(args); });
+    const original = store[operation];
+    let fail = true;
+    store[operation] = async (...args) => {
+      if (fail) {
+        fail = false;
+        if (scenario === "appendCommitted") await original(...args);
+        throw new Error(`injected ${operation} failure`);
+      }
+      return original(...args);
+    };
+    try {
+      const job = { id: `failed-${operation}`, chatKey: "chat" };
+      await assert.rejects(client.startJob(job), /injected/);
+      assert.equal(starts, 0);
+      assert.deepEqual((await store.readActiveJobs()).jobs, {});
+      assert.equal((await store.readJobState(job.id)).failureReason, "worker_admission");
+      assert.equal((await client.startJob(job)).status, "failed");
+      await client.startJob({ id: `recovered-${operation}`, chatKey: "chat" });
+      assert.equal(starts, 1);
+    } finally { await worker.close(); }
+  }
+});
+
+test("unreadable active index blocks admission/status without overwriting and resumes after repair", async (t) => {
+  let starts = 0;
+  const { worker, client, store } = await startServer(async (args) => { starts += 1; await waitForAbort(args); });
+  const read = fs.readFile;
+  const before = await read(store.paths.activeJobs, "utf8");
+  let code = "EACCES";
+  const mock = t.mock.method(fs, "readFile", async (target, ...args) => {
+    if (target === store.paths.activeJobs && code) throw Object.assign(new Error(`injected ${code}`), { code });
+    return read(target, ...args);
+  });
+  try {
+    for (code of ["EACCES", "EIO"]) {
+      await assert.rejects(client.startJob({ id: code, chatKey: "chat" }), /injected/);
+      await assert.rejects(client.status(), /injected/);
+      assert.equal(await read(store.paths.activeJobs, "utf8"), before);
+      assert.equal(starts, 0);
+    }
+    code = "";
+    await client.startJob({ id: "repaired", chatKey: "chat" });
+    assert.equal(starts, 1);
+  } finally { mock.mock.restore(); await worker.close(); }
+});
+
+test("startup reconstructs a reservation interrupted before active-index registration", async () => {
+  let starts = 0;
+  const { worker, client, store } = await startServer(async () => { starts += 1; }, {
+    prepareStore: async (prepared) => {
+      await prepared.readActiveJobs();
+      await prepared.writeJobState({ id: "interrupted", chatKey: "chat", status: "accepted" });
+    }
+  });
+  try {
+    assert.equal((await store.readJobState("interrupted")).failureReason, "worker_restart");
+    assert.deepEqual((await client.status()).activeJobs, []);
+    assert.equal(starts, 0);
+  } finally { await worker.close(); }
+});
+
+test("failed rollback blocks subsequent admission until healthy startup recovery", async () => {
+  let starts = 0;
+  const { config, worker, client, store } = await startServer(async () => { starts += 1; });
+  const write = store.writeJobState;
+  store.upsertActiveJob = async () => { throw new Error("injected reservation failure"); };
+  store.writeJobState = async (job) => {
+    if (job.failureReason === "worker_admission") throw new Error("injected rollback failure");
+    return write(job);
+  };
+  try {
+    await assert.rejects(client.startJob({ id: "uncertain", chatKey: "chat" }), /recovery is required/);
+    await assert.rejects(client.startJob({ id: "blocked", chatKey: "another" }), /recovery is required/);
+    await assert.rejects(client.status(), /recovery is required/);
+    assert.equal(starts, 0);
+  } finally { await worker.close(); }
+  const restarted = createWorkerServer({ config, executeJob: async () => { starts += 1; }, logger: { warn() {} } });
+  await restarted.listen();
+  try {
+    assert.equal((await store.readJobState("uncertain")).failureReason, "worker_restart");
+    await client.startJob({ id: "healthy", chatKey: "chat" });
+    assert.equal(starts, 1);
+  } finally { await restarted.close(); }
+});
+
+test("live controller reservations survive an index replaced with empty valid JSON", async () => {
+  let starts = 0;
+  const { worker, client, store } = await startServer(async (args) => { starts += 1; await waitForAbort(args); });
+  try {
+    await client.startJob({ id: "live-controller", chatKey: "chat" });
+    await fs.writeFile(store.paths.activeJobs, JSON.stringify({ version: 1, jobs: {} }));
+    await assert.rejects(client.startJob({ id: "duplicate-controller", chatKey: "chat" }), /Active worker job already exists/);
+    await assert.rejects(client.startJob({ id: "unsafe/id", chatKey: "other" }), /safe job ID/);
+    assert.equal(starts, 1);
+  } finally { await worker.close(); }
+});
