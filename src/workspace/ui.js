@@ -3,6 +3,7 @@ import { b, code } from "../telegram/html.js";
 import { newId, scopeKey, topicId, workspaceState } from "./store.js";
 import { isRegisteredTelegramCommandText } from "../telegram_commands.js";
 import { isTelegramServiceMessage } from "../telegram/service_messages.js";
+import { telegramTopicId } from "../telegram/context.js";
 import { menuButtonText } from "../ui/button_labels.js";
 import { completeMenuRows, WORKSPACE_INPUT_PARENTS } from "../ui/menu_definition.js";
 import { createNavigationKeyboardViews } from "../ui/keyboard_helpers.js";
@@ -88,16 +89,25 @@ export function createWorkspaceUi(r, t, { now = Date.now } = {}) {
   function matchingReplyFlow(ctx) {
     const reply = ctx.message?.reply_to_message;
     if (!reply || reply.from?.id !== r.bot.botInfo?.id) return null;
+    // Desktop may omit the incoming thread id; the replied-to prompt retains it.
+    const incomingTopicId = topicId(ctx) ?? telegramTopicId({
+      chatType: ctx.chat?.type, messageThreadId: reply.message_thread_id
+    });
     const candidates = Object.entries(state.flows).filter(([, flow]) => flow.botId === r.bot.botInfo?.id
       && String(flow.chatId) === String(ctx.chat?.id) && String(flow.userId) === String(ctx.from?.id)
       && (flow.replyPromptMessageId ?? flow.messageId) === reply.message_id
-      && flow.data?.awaiting && flow.expiresAt > now());
+      && flow.data?.awaiting && flow.expiresAt > now()
+      && (flow.messageThreadId || 0) === (incomingTopicId || 0));
     return candidates.length === 1 ? candidates[0] : null;
   }
-  function otherPendingFlow(ctx) {
-    return Object.entries(state.flows).filter(([key, flow]) => key !== scopeKey(ctx)
-      && flow.botId === r.bot.botInfo?.id && String(flow.chatId) === String(ctx.chat?.id)
-      && String(flow.userId) === String(ctx.from?.id) && flow.data?.awaiting && flow.expiresAt > now());
+  function activeReplyInAnotherTopic(ctx) {
+    const reply = ctx.message?.reply_to_message;
+    if (!reply || reply.from?.id !== r.bot.botInfo?.id) return false;
+    return Object.values(state.flows).some((flow) => flow.botId === r.bot.botInfo?.id
+      && String(flow.chatId) === String(ctx.chat?.id) && String(flow.userId) === String(ctx.from?.id)
+      && (flow.replyPromptMessageId ?? flow.messageId) === reply.message_id
+      && flow.data?.awaiting && flow.expiresAt > now()
+      && (flow.messageThreadId || 0) !== (topicId(ctx) || 0));
   }
   function register(onAction, onInput) {
     r.bot.action(/^ws:([a-f0-9]{16}):(\d+)$/, (ctx) => guard(ctx, async () => {
@@ -114,21 +124,22 @@ export function createWorkspaceUi(r, t, { now = Date.now } = {}) {
       if (isRegisteredTelegramCommandText(ctx.message)) { await clear(ctx); return next(); }
       const key = scopeKey(ctx);
       let flow = state.flows[key];
+      if (flow?.data?.awaiting && flow.expiresAt <= now()) {
+        delete state.flows[key];
+        await r.saveState();
+        flow = undefined;
+      }
       const reply = ctx.message?.reply_to_message;
       if (reply) {
         const match = matchingReplyFlow(ctx);
         if (match) {
           ctx.state.workspaceScopeKey = match[0];
           flow = match[1];
-        } else if (reply.from?.id === r.bot.botInfo?.id) {
-          const target = Object.values(state.flows).find((candidate) => candidate.botId === r.bot.botInfo?.id
-            && String(candidate.chatId) === String(ctx.chat?.id) && String(candidate.userId) === String(ctx.from?.id)
-            && (candidate.replyPromptMessageId ?? candidate.messageId) === reply.message_id && candidate.data?.awaiting);
-          return r.replyHtml(ctx, b(t(target && target.expiresAt <= now() ? "expired" : "context_mismatch")));
+        } else if (activeReplyInAnotherTopic(ctx)) {
+          return r.replyHtml(ctx, b(t("context_mismatch")));
         }
       }
       if (!flow?.data.awaiting) {
-        if (otherPendingFlow(ctx).length) return r.replyHtml(ctx, b(t("context_mismatch")));
         return next();
       }
       return guard(ctx, async () => {
