@@ -7,7 +7,10 @@ export function createEventLogReader({
   maxCheckpoints = 1024,
 } = {}) {
   const indexes = new Map();
-  return async function read(file, { afterSeq = 0, limit = 500 } = {}) {
+  const read = async function read(
+    file,
+    { afterSeq = 0, limit = 500, includeIncomplete = true } = {},
+  ) {
     const after = Number(afterSeq || 0);
     const count = Math.max(0, Math.trunc(Number(limit) || 0));
     let handle;
@@ -36,6 +39,9 @@ export function createEventLogReader({
           tailMaxSeq: -Infinity,
           stride: 128,
           points: [{ offset: 0, maxSeq: -Infinity }],
+          lastRecordStart: 0,
+          previousSeq: 0,
+          monotonic: true,
         };
       }
       if (size !== index.size) {
@@ -48,6 +54,12 @@ export function createEventLogReader({
           if (!line.complete) {
             if (!Number.isNaN(seq)) index.tailMaxSeq = seq;
             continue;
+          }
+          if (line.event !== undefined) {
+            index.monotonic &&=
+              Number.isSafeInteger(seq) && seq > index.previousSeq;
+            index.previousSeq = seq;
+            index.lastRecordStart = index.offset;
           }
           index.offset = line.end;
           if (!Number.isNaN(seq)) index.maxSeq = Math.max(index.maxSeq, seq);
@@ -81,8 +93,12 @@ export function createEventLogReader({
         offset = point.offset;
       }
       const events = [];
-      for await (const { event } of records(handle, offset, size)) {
-        if (event !== undefined && Number(event.seq || 0) > after)
+      for await (const { event, complete } of records(handle, offset, size)) {
+        if (
+          (complete || includeIncomplete) &&
+          event !== undefined &&
+          Number(event.seq || 0) > after
+        )
           events.push(event);
         if (events.length >= count) break;
       }
@@ -94,6 +110,32 @@ export function createEventLogReader({
       await handle?.close();
     }
   };
+  // Inspect the committed prefix without retaining event bodies in the cache.
+  read.inspect = async (file) => {
+    await read(file, { limit: 0 });
+    const index = indexes.get(file);
+    let lastEvent;
+    const handle = await fs.open(file, "r");
+    try {
+      for await (const row of records(
+        handle,
+        index.lastRecordStart,
+        index.offset,
+      )) {
+        if (row.event !== undefined) lastEvent = row.event;
+      }
+    } finally {
+      await handle.close();
+    }
+    return {
+      lastSeq: Number.isFinite(index.maxSeq) ? index.maxSeq : 0,
+      completeBytes: index.offset,
+      size: index.size,
+      monotonic: index.monotonic,
+      lastEvent,
+    };
+  };
+  return read;
 }
 
 async function* records(handle, start, size) {

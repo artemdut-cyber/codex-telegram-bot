@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import net from "node:net";
+import { createHash } from "node:crypto";
 import { PRIVATE_FILE_MODE } from "../fs/private.js";
 import { createFrameReader, encodeFrame, errorResponse, okResponse } from "./protocol.js";
 import { createWorkerStore } from "./store.js";
@@ -20,8 +21,10 @@ export function createWorkerServer({
 } = {}) {
   if (!config) throw new Error("config is required.");
   const controllers = new Map();
+  const chatReservations = new Map();
   const codexClients = new Map();
   const jobTasks = new Map();
+  let admissionError;
   const maintenance = createWorkerLogMaintenance({ config, store });
   let maintenanceTimer;
   let maintenanceStart;
@@ -37,13 +40,20 @@ export function createWorkerServer({
     const params = request?.params || {};
     if (method === "worker/archive") return maintenance.run(params);
     if (method === "job/delivered") return store.confirmDelivery(params.entry);
-    if (method === "worker/status") return workerStatus(store, controllers);
+    if (method === "worker/status") {
+      if (admissionError) throw admissionError;
+      return workerStatus(store, controllers);
+    }
     if (method === "job/status") return jobStatus(store, params.jobId);
     if (method === "job/events") return jobEvents(store, params.jobId, params);
     if (method === "job/cancel") return cancelJob(store, controllers, params.jobId);
     if (method === "job/start") {
+      if (admissionError) throw admissionError;
       if (updateAdmissionPaused(config)) throw new Error("Codex update is waiting for idle; new jobs are paused.");
-      return startJob({ config, store, controllers, codexClients, jobTasks, executeJob, logger, heartbeatMs, job: params.job });
+      return store.withAdmissionLock(() => {
+        if (admissionError) throw admissionError;
+        return startJob({ config, store, controllers, chatReservations, codexClients, jobTasks, executeJob, logger, heartbeatMs, job: params.job, onAdmissionFailure: (error) => { admissionError = error; } });
+      });
     }
     throw new Error(`Unknown worker method: ${method}`);
   }
@@ -75,6 +85,7 @@ export function createWorkerServer({
     server,
     async listen() {
       await store.ensure();
+      await store.recoverActiveJobs();
       await reconcileOrphanedJobs(store);
       await fs.rm(config.codexWorkerSocket, { force: true }).catch(() => {});
       await new Promise((resolve, reject) => {
@@ -102,7 +113,7 @@ export function createWorkerServer({
           type: "worker.shutdown",
           status: "running",
           message: "worker shutdown"
-        }).catch(() => {});
+        }).catch((error) => logger.warn?.("worker shutdown event failed:", error instanceof Error ? error.message : String(error)));
         controller.abort(new Error("worker shutdown"));
       }
       await Promise.allSettled([...jobTasks.values()]);
@@ -111,35 +122,62 @@ export function createWorkerServer({
   };
 }
 
-async function startJob({ config, store, controllers, codexClients, jobTasks, executeJob, logger, heartbeatMs, job }) {
+async function startJob({ config, store, controllers, chatReservations, codexClients, jobTasks, executeJob, logger, heartbeatMs, job, onAdmissionFailure }) {
   if (!job?.id) throw new Error("job/start requires job.id.");
+  if (typeof job.id !== "string" || !/^[a-zA-Z0-9._:-]{1,120}$/.test(job.id)) throw new Error("job/start requires a safe job ID of at most 120 characters.");
   if (!job.chatKey) throw new Error("job/start requires job.chatKey.");
   const active = await store.readActiveJobs();
+  const requestHash = createHash("sha256").update(JSON.stringify(canonicalJob({ ...job, transport: job.transport || config.codexTransport }))).digest("hex");
+  const existing = await store.readJobState(job.id);
+  if (existing?.eventArchive) throw new Error("Archived worker jobs are immutable; use a new job ID.");
+  if (existing) {
+    if (existing.requestHash !== requestHash) throw new Error("Worker job ID already exists with a different request; use a new job ID.");
+    return { jobId: job.id, status: existing.status };
+  }
+  if ((await store.readJobEvents(job.id, { limit: 1 })).length) throw new Error("Worker events already exist without job state; use a new job ID after recovery.");
+  if (chatReservations.has(job.chatKey)) throw new Error(`Active worker job already exists for chat ${job.chatKey}: ${chatReservations.get(job.chatKey)}`);
   const duplicate = Object.values(active.jobs).find((entry) => (
     entry?.chatKey === job.chatKey && entry?.status !== "completed" && entry?.status !== "failed" && entry?.status !== "cancelled"
   ));
   if (duplicate) throw new Error(`Active worker job already exists for chat ${job.chatKey}: ${duplicate.id}`);
 
-  if ((await store.readJobState(job.id))?.eventArchive) throw new Error("Archived worker jobs are immutable; use a new job ID.");
-
   const accepted = {
     ...job,
     status: "accepted",
     transport: job.transport || config.codexTransport,
-    acceptedAt: new Date().toISOString()
+    acceptedAt: new Date().toISOString(),
+    lastSeq: 0,
+    requestHash
   };
-  await store.writeJobState(accepted);
-  await store.upsertActiveJob(accepted);
-  await store.appendJobEvent(job.id, {
-    type: "worker.job.accepted",
-    status: "accepted",
-    chatKey: job.chatKey,
-    kind: job.kind || "user",
-    transport: accepted.transport
-  });
+  try {
+    await store.writeJobState(accepted);
+    await store.upsertActiveJob(accepted);
+    await store.appendJobEvent(job.id, {
+      type: "worker.job.accepted",
+      status: "accepted",
+      chatKey: job.chatKey,
+      kind: job.kind || "user",
+      transport: accepted.transport
+    });
+  } catch (error) {
+    // Never execute after an incomplete admission. A failed tombstone also makes
+    // the same ID retry idempotent. If rollback fails, the durable reservation
+    // remains conservative and startup reconciliation finishes recovery.
+    try {
+      await store.writeJobState({ ...accepted, lastSeq: undefined, status: "failed", failureReason: "worker_admission", completedAt: new Date().toISOString() });
+      await store.removeActiveJob(job.id);
+    } catch (rollbackError) {
+      logger.warn?.("worker admission rollback failed:", rollbackError instanceof Error ? rollbackError.message : String(rollbackError));
+      const failure = new AggregateError([error, rollbackError], "Worker admission and rollback failed; recovery is required.");
+      onAdmissionFailure(failure);
+      throw failure;
+    }
+    throw error;
+  }
 
   const controller = new AbortController();
   controllers.set(job.id, controller);
+  chatReservations.set(job.chatKey, job.id);
   const heartbeat = heartbeatMs > 0
     ? setInterval(() => {
       store.appendJobEvent(job.id, {
@@ -158,7 +196,7 @@ async function startJob({ config, store, controllers, codexClients, jobTasks, ex
     if (heartbeat) clearInterval(heartbeat);
   };
   controller.signal.addEventListener("abort", stopHeartbeat, { once: true });
-  const task = executeJob({ job: accepted, config, store, signal: controller.signal, codexClients })
+  const task = Promise.resolve().then(() => executeJob({ job: accepted, config, store, signal: controller.signal, codexClients }))
     .catch((error) => {
       logger.warn?.("worker job failed:", error instanceof Error ? error.message : String(error));
     })
@@ -166,7 +204,8 @@ async function startJob({ config, store, controllers, codexClients, jobTasks, ex
       controller.signal.removeEventListener("abort", stopHeartbeat);
       stopHeartbeat();
       controllers.delete(job.id);
-      await store.removeActiveJob(job.id).catch(() => {});
+      if (chatReservations.get(job.chatKey) === job.id) chatReservations.delete(job.chatKey);
+      await store.removeActiveJob(job.id).catch((error) => logger.warn?.("worker active job cleanup failed:", error instanceof Error ? error.message : String(error)));
     });
   jobTasks.set(job.id, task);
   task.finally(() => {
@@ -174,6 +213,14 @@ async function startJob({ config, store, controllers, codexClients, jobTasks, ex
   }).catch(() => {});
 
   return { jobId: job.id, status: "accepted" };
+}
+
+function canonicalJob(value) {
+  if (Array.isArray(value)) return value.map(canonicalJob);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJob(value[key])]));
+  }
+  return value;
 }
 
 async function reconcileOrphanedJobs(store) {

@@ -1620,3 +1620,16 @@ and clearer CI diagnostics.
 - Added queue modes, inline settings, image input support, cleanup, backups,
   export, health checks, and maintenance tools inspired by keep-codex-fast.
 - Added English and Korean README files, hero image, and MIT license.
+
+## Pending changes (unreleased)
+
+- Preserve UTF-8 characters across Worker RPC chunk boundaries and reject
+  incomplete frames on disconnect.
+- Serialize Worker job admission, make identical job ID retries idempotent and
+  rollback failed reservations while preserving parallel execution across chats.
+- Recover event sequences from committed JSONL records, preserve partial writes
+  in quarantine and distinguish corrupt state from permission/I/O failures.
+- Restrict dependency auto merge by author identity, repository, semantic file
+  changes and successful required CI; pin the inspected head SHA at merge time.
+- Add concurrent admission and storage fault injection tests plus mocked
+  dependency merge policy tests. See [recovery notes](docs/worker-integrity.md).

@@ -242,6 +242,9 @@ The default runtime is `CODEX_WORKER_MODE=sidecar` with
 execution and writes a durable per-job JSONL event log. The Telegram bot owns
 Telegram updates, menus, replies, and delivery cursors.
 
+See [Worker integrity and dependency merge policy](docs/worker-integrity.md) for
+job retry behavior, fail-closed storage recovery, durability limits and CI policy.
+
 This split is the primary bot restart recovery mechanism. If
 `codex-telegram-bot.service` restarts while a turn is running, the worker keeps
 the Codex stream alive. On startup, the bot reconnects to the worker, replays

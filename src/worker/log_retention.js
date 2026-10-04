@@ -155,7 +155,7 @@ export function createWorkerLogMaintenance({ config, store, now = Date.now }) {
       const id = file.name.slice(0, -6);
       report.scanned += 1;
       await store.withJobLock(id, async () => {
-        const job = await store.readJobState(id);
+        const job = await store.readJobStateLocked(id);
         const receipt = deliveryReceipt(job, guard.sent.get(id));
         if (receipt && apply && !receiptMatches(job))
           await store.writeJobStateLocked({ id, deliveryReceipt: receipt });

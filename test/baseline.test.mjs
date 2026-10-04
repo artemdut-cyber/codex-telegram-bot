@@ -92,11 +92,12 @@ test("optional Codex workflows degrade gracefully", async () => {
   assert.match(dependencyUpdate, /one or more Codex npm packages are currently unavailable/);
 });
 
-test("dependency auto-merge checks GitHub rollup conclusions safely", async () => {
+test("dependency auto-merge executes only the trusted default-branch policy", async () => {
   const workflow = await fs.readFile(new URL("../.github/workflows/dependency-pr-auto-merge.yml", import.meta.url), "utf8");
-  assert.match(workflow, /\. as \$check/);
-  assert.match(workflow, /index\(\$check\.conclusion \/\/ ""\)/);
-  assert.doesNotMatch(workflow, /index\(\.conclusion \/\/ ""\)/);
+  assert.match(workflow, /ref: \$\{\{ github.sha \}\}/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /run: node scripts\/dependency-pr-auto-merge.mjs/);
+  assert.doesNotMatch(workflow, /pull_request_target|head_sha|npm (ci|install)/);
 });
 
 test("bot entrypoint stays thin and runtime stays packaged", async () => {

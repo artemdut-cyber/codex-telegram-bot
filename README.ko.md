@@ -231,6 +231,9 @@ Node 26에서도 실행하며, 영향을 받는 멀티파트 통합 테스트만
 job별 JSONL event log를 영속적으로 기록합니다. Telegram bot은 Telegram update,
 메뉴, 응답 전송, delivery cursor만 담당합니다.
 
+동일 job ID 재시도, 저장소 오류 시 접수 중단과 복구, 영속성 한계 및 자동머지
+검증 정책은 [Worker integrity 문서](docs/worker-integrity.md)를 참고하세요.
+
 이 분리가 bot 재시작 복구의 핵심입니다. `codex-telegram-bot.service`가 turn
 실행 중 재시작되어도 worker는 Codex stream을 계속 유지합니다. bot은 startup
 후 worker에 다시 연결해 저장된 cursor 이후 event를 재생하고 final answer 또는
