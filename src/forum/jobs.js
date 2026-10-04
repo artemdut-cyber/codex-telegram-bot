@@ -31,6 +31,7 @@ export function createForumJobs(r, { service, accounts, text: t, now = Date.now 
       service.authorize(ctx.from.id, group, id);
       const topic = service.topic(group, id);
       if (topic.role !== "project" || !topic.cwd || topic.closed) throw new Error(t("unbound"));
+      await service.checkTopic(group, id);
       if (id === forumTopicId(ctx)) throw new LocalizedError("errors.sendThisRequestDirectlyInTheCurrentProjectTopic");
       if (Object.values(state.jobs).filter((job) => LIVE_FORUM_JOBS.has(job.status)).length >= 20) throw new LocalizedError("errors.twentyDispatchedJobsAreAlreadyUnfinishedWaitForOne");
       await directory(topic.cwd);
@@ -67,6 +68,7 @@ export function createForumJobs(r, { service, accounts, text: t, now = Date.now 
     const group = state.groups[String(job.groupId)], topic = service.topic(group, job.targetTopicId);
     if (job.targetKey !== key || topic.bindingId !== job.bindingId || !topic.cwd || topic.closed) throw new LocalizedError("errors.theProjectTopicBindingChangedWhileThisJobWas");
     await directory(topic.cwd);
+    await service.checkTopic(group, topic.id);
     if ((await accounts.get(job.accountId)).status !== "ready") throw new LocalizedError("errors.theProjectAccountNeedsSignIn");
     job.status = "running";
     await r.saveState();

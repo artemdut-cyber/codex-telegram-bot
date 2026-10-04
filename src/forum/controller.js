@@ -23,6 +23,7 @@ export function createForumMenus(r, { ui, accounts, text, now = Date.now }) {
   };
   function allowedTopics(ctx, group) {
     return Object.values(group.topics).filter((topic) => {
+      if (topic.stale) return false;
       try { service.authorize(ctx.from.id, group, topic.id); return true; } catch { return false; }
     });
   }
@@ -37,6 +38,7 @@ export function createForumMenus(r, { ui, accounts, text, now = Date.now }) {
     }
     service.group(ctx);
     const personal = forumChatType(group) === "private";
+    await service.reconcileTopics(group, ctx.from.id);
     const topics = allowedTopics(ctx, group);
     const rows = topics.slice(page * PAGE, (page + 1) * PAGE).map((topic) => [btn(`${topic.closed ? "⏸" : topic.cwd || topic.role !== "project" ? "🏷" : "⚠️"} ${topic.name}`, "forum-topic", { id: topic.id })]);
     const paging = [];
@@ -78,7 +80,7 @@ export function createForumMenus(r, { ui, accounts, text, now = Date.now }) {
   }
   async function chooseTarget(ctx, prompt, page = 0) {
     const group = service.group(ctx);
-    const list = allowedTopics(ctx, group).filter((p) => p.role === "project" && p.cwd && !p.closed && p.id !== forumTopicId(ctx));
+    const list = allowedTopics(ctx, group).filter((p) => p.role === "project" && p.cwd && !p.closed && !p.stale && p.id !== forumTopicId(ctx));
     const rows = list.slice(page * PAGE, (page + 1) * PAGE).map((p) => [btn(p.name, prompt ? "forum-send" : "forum-prompt", { id: p.id, prompt })]);
     const nav = [];
     if (page) nav.push(btn("←", "forum-targets", { prompt, page: page - 1 }));
@@ -182,12 +184,18 @@ export function createForumMenus(r, { ui, accounts, text, now = Date.now }) {
       if (!group) return next();
       const id = forumTopicId(ctx), message = ctx.message;
       if (!group.topics[id]) {
-        if (Object.values(group.topics).filter((item) => item.role === "project").length >= 60) return r.replyHtml(ctx, t("noTopics"));
+        if (Object.values(group.topics).filter((item) => item.role === "project" && !item.stale).length >= 60) return r.replyHtml(ctx, t("noTopics"));
+        if (!message?.forum_topic_created) return next();
         group.topics[id] = { id, name: message?.forum_topic_created?.name || `#${id}`,
           role: id === forumRootTopicId(group) ? (forumChatType(group) === "private" ? "workspace" : "manager") : "project" };
         await r.saveState();
       }
       const topic = group.topics[id];
+      if (topic?.stale) {
+        if (ctx.callbackQuery) return ui.guard(ctx, () => list(ctx));
+        if (isRegisteredTelegramCommandText(message)) return next();
+        return;
+      }
       if (message?.forum_topic_created || message?.forum_topic_edited || message?.forum_topic_closed || message?.forum_topic_reopened) {
         if (message.forum_topic_edited?.name) topic.name = message.forum_topic_edited.name;
         if (message.forum_topic_closed) topic.closed = true;

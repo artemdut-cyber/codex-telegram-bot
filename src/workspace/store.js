@@ -8,7 +8,7 @@ import { normalizeWorkspaceState } from "../state/schema.js";
 
 export const newId = () => randomBytes(8).toString("hex");
 export const topicId = (ctx) => telegramContextMeta(ctx).messageThreadId;
-export const scopeKey = (ctx) => `${ctx.chat.id}:${topicId(ctx) || 0}:${ctx.from.id}`;
+export const scopeKey = (ctx) => ctx.state?.workspaceScopeKey || `${ctx.chat.id}:${topicId(ctx) || 0}:${ctx.from.id}`;
 export const destinationKey = (meta) => `${meta.chatId}:${telegramTopicId(meta) || 0}`;
 
 export function workspaceState(state) {

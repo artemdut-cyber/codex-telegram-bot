@@ -31,7 +31,57 @@ export function createForumService(r, { accounts, now = Date.now, text: t }) {
   function topic(value, id) {
     const item = value.topics[id];
     if (!item) throw new LocalizedError("errors.thisTopicIsNoLongerRegisteredOpenTopicsAgain");
+    if (item.stale) throw new LocalizedError("errors.thisForumTopicNoLongerExistsRefreshTopics");
     return item;
+  }
+  function missingThread(error) {
+    const code = error?.response?.error_code ?? error?.error_code ?? error?.statusCode ?? error?.code;
+    const description = error?.response?.description ?? error?.description ?? error?.message ?? "";
+    return Number(code) === 400 && /message thread not found/i.test(String(description));
+  }
+  async function markStale(value, id, error) {
+    const item = value.topics[id];
+    if (!item || !missingThread(error)) return false;
+    item.stale = true;
+    item.closed = true;
+    item.staleAt = now();
+    item.staleReason = "message_thread_not_found";
+    const key = forumTopicKey(value, id), chat = r.getChatState(key);
+    if (!item.bindingId || chat.forumBinding?.id === item.bindingId) delete chat.forumBinding;
+    delete item.bindingId;
+    delete item.cwd;
+    delete item.preset;
+    delete chat.destination;
+    for (const name of ["threadId", "threadAccountId", "accountThreads", "accountAttemptState"]) delete chat[name];
+    for (const name of ["workingDirectory", "model", "modelReasoningEffort", "serviceTier"]) delete chat.options[name];
+    r.threadCache.delete(key);
+    await r.saveState();
+    return true;
+  }
+  async function checkTopic(value, id) {
+    const item = value.topics[id];
+    if (!item || item.stale) throw new LocalizedError("errors.thisForumTopicNoLongerExistsRefreshTopics");
+    try {
+      const extra = Number(id) === forumRootTopicId(value) ? undefined : { message_thread_id: Number(id) };
+      await r.bot.telegram.sendChatAction(value.chatId, "typing", extra);
+      return item;
+    } catch (error) {
+      if (await markStale(value, id, error)) throw new LocalizedError("errors.thisForumTopicNoLongerExistsRefreshTopics");
+      throw error;
+    }
+  }
+  async function reconcileTopics(value, userId) {
+    const pending = Object.values(value.topics).filter((item) => {
+      if (item.stale) return false;
+      if (userId == null) return true;
+      try { authorize(userId, value, item.id); return true; } catch { return false; }
+    });
+    for (let offset = 0; offset < pending.length; offset += 5) {
+      const results = await Promise.allSettled(pending.slice(offset, offset + 5).map((item) => checkTopic(value, item.id)));
+      const failure = results.find((result) => result.status === "rejected"
+        && !pending[offset + results.indexOf(result)].stale);
+      if (failure) throw failure.reason;
+    }
   }
   function assertIdle(value, id) {
     const key = forumTopicKey(value, id);
@@ -127,8 +177,8 @@ export function createForumService(r, { accounts, now = Date.now, text: t }) {
       if (r.config.allowedThreadIds?.size) throw new LocalizedError("errors.allowedThreadsRestrictNewTopics");
       const title = String(name || "").trim();
       if (!title || title.length > 128 || /\p{Cc}/u.test(title)) throw new LocalizedError("errors.useATopicNameOf1128Characters");
-      if (Object.values(value.topics).some((item) => item.name.toLocaleLowerCase() === title.toLocaleLowerCase())) throw new LocalizedError("errors.thisTopicNameIsAlreadyInUse");
-      if (Object.values(value.topics).filter((item) => item.role === "project").length >= 60) throw new LocalizedError("errors.atMost60ProjectTopicsPerChat");
+      if (Object.values(value.topics).some((item) => !item.stale && item.name.toLocaleLowerCase() === title.toLocaleLowerCase())) throw new LocalizedError("errors.thisTopicNameIsAlreadyInUse");
+      if (Object.values(value.topics).filter((item) => item.role === "project" && !item.stale).length >= 60) throw new LocalizedError("errors.atMost60ProjectTopicsPerChat");
       const checked = await validatePreset(value, null, selected);
       await rights(value);
       const created = await r.bot.telegram.createForumTopic(value.chatId, title);
@@ -166,6 +216,6 @@ export function createForumService(r, { accounts, now = Date.now, text: t }) {
       return item;
     });
   }
-  return { state, group, topic, authorize, exclusive, assertIdle, resolve, preset, setup, bind, create, update,
+  return { state, group, topic, authorize, exclusive, assertIdle, resolve, preset, setup, bind, create, update, checkTopic, reconcileTopics, markStale,
     destination: forumDestination, key: forumTopicKey };
 }

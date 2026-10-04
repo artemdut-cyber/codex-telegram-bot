@@ -40,7 +40,7 @@ export function forumProjects(state, userId) {
 }
 
 export function applyTopicBinding(r, group, topic) {
-  if (!topic?.bindingId || !topic.cwd) return;
+  if (!topic?.bindingId || !topic.cwd || topic.stale) return;
   const key = forumTopicKey(group, topic.id), chat = r.getChatState(key);
   if (chat.forumBinding?.id === topic.bindingId) return;
   for (const name of ["threadId", "threadAccountId", "accountThreads", "accountAttemptState"]) delete chat[name];
