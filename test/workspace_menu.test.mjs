@@ -14,6 +14,62 @@ async function registerTask(f, options = {}) {
   await f.press("현재 폴더·계정·모델 사용"); await f.press("N분 간격"); await f.send("5", options); await f.press("✅ 저장");
   return Object.values(f.state.workspace.tasks)[0];
 }
+
+async function beginProjectNameInput(f, options = {}) {
+  await f.send("/projects", options);
+  await f.press("현재 프로젝트 저장");
+  const flow = f.state.workspace.flows[`${options.chatId || 1}:${options.threadId || 0}:${options.userId || 1}`];
+  const prompt = f.messages.find((message) => message.message_id === flow.replyPromptMessageId);
+  assert.deepEqual(prompt.extra.reply_markup, { force_reply: true, input_field_placeholder: "✍️ 메뉴 입력" });
+  return { flow, prompt };
+}
+
+test("workspace input accepts normal same-topic text and posts an explicit ForceReply prompt", async (t) => {
+  const f = await workspaceFixture(t);
+  const { flow, prompt } = await beginProjectNameInput(f, { threadId: 40 });
+  await f.send("My project", { threadId: 40 });
+  assert.equal(flow.data.awaiting, true);
+  assert.equal(Object.values(f.state.workspace.projects).flat().some((project) => project.name === "My project"), true);
+  assert.equal(prompt.message_id, flow.replyPromptMessageId);
+});
+
+test("reply prompt message id restores its original workspace flow across a changed Telegram topic id", async (t) => {
+  const f = await workspaceFixture(t);
+  const { flow, prompt } = await beginProjectNameInput(f, { threadId: 41 });
+  await f.send("Routed by prompt", { threadId: 99, replyTo: prompt });
+  assert.equal(f.state.workspace.projects["1:41:1"].some((project) => project.name === "Routed by prompt"), true);
+  assert.equal(f.state.workspace.projects["1:99:1"], undefined);
+  assert.equal(flow.data.awaiting, true);
+});
+
+test("two pending workspace flows remain isolated and route only by their exact prompt ids", async (t) => {
+  const f = await workspaceFixture(t);
+  const first = await beginProjectNameInput(f, { threadId: 41 });
+  const second = await beginProjectNameInput(f, { threadId: 42 });
+  await f.send("Second project", { threadId: 41, replyTo: second.prompt });
+  assert.equal(f.state.workspace.projects["1:42:1"].some((project) => project.name === "Second project"), true);
+  assert.equal(f.state.workspace.projects["1:41:1"]?.length || 0, 0);
+  assert.ok(first.flow.data.awaiting);
+});
+
+test("reply to an unrelated bot message is rejected while a workspace input is pending", async (t) => {
+  const f = await workspaceFixture(t);
+  await beginProjectNameInput(f, { threadId: 41 });
+  await f.send("Not the workspace prompt", { threadId: 41,
+    replyTo: { message_id: 9876, from: f.bot.botInfo, text: "✍️ unrelated prompt" } });
+  assert.match(f.messages.at(-1).text, /진행 중인 입력 요청과 연결되지 않았습니다/);
+  assert.equal(Object.values(f.state.workspace.projects).flat().length, 0);
+});
+
+test("reply to an expired workspace input prompt is rejected", async (t) => {
+  const f = await workspaceFixture(t);
+  const { prompt } = await beginProjectNameInput(f, { threadId: 41 });
+  f.clock.now += 16 * 60_000;
+  await f.send("Too late", { threadId: 99, replyTo: prompt });
+  assert.match(f.messages.at(-1).text, /만료|expired/);
+  assert.equal(Object.values(f.state.workspace.projects).flat().length, 0);
+});
+
 test("expired workspace buttons acknowledge once and preserve the menu without a new message", async (t) => {
   const f = await workspaceFixture(t);
   await f.send("/projects");
@@ -61,9 +117,10 @@ test("previous leaves workspace input and cards without saving, queuing or accep
   const f = await workspaceFixture(t);
   await f.send("/projects");
   await f.press("현재 프로젝트 저장");
-  const old = { ...f.messages.at(-1) }, oldBack = f.buttons().find((button) => button.text === "⬅️ 이전").callback_data;
+  const old = { ...f.messages.find((message) => message.message_id === f.state.workspace.flows["1:0:1"].messageId) },
+    oldBack = f.buttons().find((button) => button.text === "⬅️ 이전").callback_data;
   await f.press("이전");
-  assert.match(f.messages.at(-1).text, /프로젝트/);
+  assert.match(f.messages.find((message) => message.message_id === old.message_id).text, /프로젝트/);
   await f.send("Not a project name");
   assert.deepEqual(f.forwarded, ["Not a project name"]);
   assert.equal(Object.values(f.state.workspace.projects)[0].length, 0);

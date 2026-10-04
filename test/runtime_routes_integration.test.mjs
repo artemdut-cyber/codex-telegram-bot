@@ -152,7 +152,7 @@ test("workspace prompt replies correlate only to their own project topic", async
   const secondPrompt = globalThis.structuredClone(f.messages.at(-1));
   await f.send(f.root, { ...first, threadId: undefined, replyTo: firstPrompt });
   assert.equal(f.state.workspace.flows[`${first.chatId}:21:1`]?.data.awaiting, undefined);
-  assert.equal(f.state.workspace.flows[`${second.chatId}:22:1`]?.messageId, secondPrompt.message_id);
+  assert.equal(f.state.workspace.flows[`${second.chatId}:22:1`]?.replyPromptMessageId, secondPrompt.message_id);
 });
 
 test("unmatched Desktop context input is rejected without forwarding into another project", async (t) => {

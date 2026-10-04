@@ -91,11 +91,13 @@ export async function workspaceFixture(t, options = {}) {
   const click = (data, message = messages.at(-1), { userId = 1, threadId } = {}) => bot.handleUpdate({ update_id: ++seq,
     callback_query: { id: String(++seq), from: user(userId), data,
       message: { ...message, ...(threadId != null ? { message_thread_id: threadId } : {}) }, chat_instance: "test" } });
-  const buttons = (msg = messages.at(-1)) => msg?.extra?.reply_markup?.inline_keyboard?.flat() || [];
+  const buttons = (msg = [...messages].reverse().find((item) => item.extra?.reply_markup?.inline_keyboard)) =>
+    msg?.extra?.reply_markup?.inline_keyboard?.flat() || [];
   const press = async (label) => {
-    const button = buttons().find((b) => b.text === label || b.text.includes(label));
+    const menu = [...messages].reverse().find((item) => item.extra?.reply_markup?.inline_keyboard);
+    const button = buttons(menu).find((b) => b.text === label || b.text.includes(label));
     if (!button) throw new Error(`Missing button: ${label}; got ${buttons().map((b) => b.text).join(", ")}; ${messages.at(-1)?.text}`);
-    return click(button.callback_data);
+    return click(button.callback_data, menu);
   };
   return { ...storage, bot, state, r, controller, messages, apiCalls, forwarded, starts, backendCalls, saves, clock, send, click, press, buttons, queue, sessions };
 }

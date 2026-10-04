@@ -40,8 +40,14 @@ export function createWorkspaceUi(r, t, { now = Date.now } = {}) {
   }
   async function ask(ctx, label, data, hint = "") {
     const parent = WORKSPACE_INPUT_PARENTS[data.stage?.split("-")[0]] || "home";
-    return show(ctx, `${b(t("input"))}\n\n${b(label)}\n${hint}\n\n${t("inputHint")}`,
+    const flow = await show(ctx, `${b(t("input"))}\n\n${b(label)}\n${hint}\n\n${t("inputHint")}`,
       [[button(t("cancel"), parent)], [back(parent, data.view)]], { ...data, awaiting: true });
+    const prompt = await r.replyHtml(ctx, `${b(t("input"))}\n${t("inputHint")}`, {
+      reply_markup: { force_reply: true, input_field_placeholder: t("input") }
+    });
+    flow.replyPromptMessageId = prompt?.message_id;
+    await r.saveState();
+    return flow;
   }
   async function close(ctx) {
     await clear(ctx);
@@ -84,7 +90,8 @@ export function createWorkspaceUi(r, t, { now = Date.now } = {}) {
     if (!reply || reply.from?.id !== r.bot.botInfo?.id) return null;
     const candidates = Object.entries(state.flows).filter(([, flow]) => flow.botId === r.bot.botInfo?.id
       && String(flow.chatId) === String(ctx.chat?.id) && String(flow.userId) === String(ctx.from?.id)
-      && flow.messageId === reply.message_id && flow.data?.awaiting && flow.expiresAt > now());
+      && (flow.replyPromptMessageId ?? flow.messageId) === reply.message_id
+      && flow.data?.awaiting && flow.expiresAt > now());
     return candidates.length === 1 ? candidates[0] : null;
   }
   function otherPendingFlow(ctx) {
@@ -113,8 +120,11 @@ export function createWorkspaceUi(r, t, { now = Date.now } = {}) {
         if (match) {
           ctx.state.workspaceScopeKey = match[0];
           flow = match[1];
-        } else if (reply.from?.id === r.bot.botInfo?.id && reply.text?.startsWith("✍️")) {
-          return r.replyHtml(ctx, b(t("expired")));
+        } else if (reply.from?.id === r.bot.botInfo?.id) {
+          const target = Object.values(state.flows).find((candidate) => candidate.botId === r.bot.botInfo?.id
+            && String(candidate.chatId) === String(ctx.chat?.id) && String(candidate.userId) === String(ctx.from?.id)
+            && (candidate.replyPromptMessageId ?? candidate.messageId) === reply.message_id && candidate.data?.awaiting);
+          return r.replyHtml(ctx, b(t(target && target.expiresAt <= now() ? "expired" : "context_mismatch")));
         }
       }
       if (!flow?.data.awaiting) {
@@ -123,7 +133,7 @@ export function createWorkspaceUi(r, t, { now = Date.now } = {}) {
       }
       return guard(ctx, async () => {
         const current = read(ctx);
-        if (reply && reply.message_id !== current.messageId) throw new Error(t("context_mismatch"));
+        if (reply && reply.message_id !== (current.replyPromptMessageId ?? current.messageId)) throw new Error(t("context_mismatch"));
         if (!current.data.awaiting || !value) throw new Error(t("useButtons"));
         ctx.state.workspaceParentPanel = current.parentPanel;
         return onInput(ctx, value, current.data);
