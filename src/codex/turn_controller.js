@@ -227,6 +227,7 @@ export function createTurnRuntimeController({
         applySideThreadPrompt(preparedTurn.inputText),
         preparedTurn.imagePaths
       );
+      await lifecycle.prepareNewSession?.(chatKey, { forceNewSession: true });
       const thread = codex.startThread(chatKey);
       const turn = await codex.runTurn(
         ctx,

@@ -18,6 +18,7 @@ import { createChatOptionsController } from "./codex/chat_options_controller.js"
 import { createAccountStore } from "./accounts/store.js";
 import { reconcileAccountSelections } from "./accounts/selection.js";
 import { createCodexSessionRuntime } from "./codex/session_runtime.js";
+import { loadRoleIdentityConfig } from "./codex/role_identity.js";
 import { replyCodexSkillsStatus } from "./codex/skills_status.js";
 import {
   CODEX_TRANSPORT_APP_SERVER_DIRECT,
@@ -112,6 +113,7 @@ const VALID = {
 };
 
 const config = readRuntimeConfig();
+const roleIdentityConfig = await loadRoleIdentityConfig(config.codexRoleIdentityConfigFile);
 const { redactText, redactValue } = createRuntimeRedactor(config);
 const telegramApiAgent = createTelegramApiAgent();
 const bot = new Telegraf(config.telegramBotToken, {
@@ -1101,6 +1103,7 @@ executionRuntime = createExecutionComposition({
   beforeTurn: (...args) => workspaceMenus?.forum.jobs.beforeTurn(...args),
   beforeDelivery: (...args) => workspaceMenus?.forum.jobs.validateDelivery(...args),
   config,
+  roleIdentityConfig,
   state,
   activeTurns,
   threadCache,

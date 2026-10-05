@@ -7,8 +7,16 @@ import { createLiveProgressController } from "../ui/live_progress.js";
 import { createWorkerRuntimeController } from "../worker/runtime_controller.js";
 import { accountThreadId } from "../accounts/context.js";
 import { updateAdmissionPaused } from "../maintenance/update_state.js";
+import { createRoleIdentitySynchronizer } from "../codex/role_identity.js";
 
 export function createExecutionComposition(r) {
+  const roleIdentity = r.roleIdentityConfig
+    ? createRoleIdentitySynchronizer({
+        config: r.roleIdentityConfig,
+        chats: { get: r.getChatState },
+        options: { get: r.getEffectiveOptions }
+      })
+    : null;
   const journal = createTurnRecoveryJournal({
     settings: {
       enabled: r.config.botRestartRecoveryEnabled,
@@ -178,7 +186,11 @@ export function createExecutionComposition(r) {
       isRecoveryActive: r.isRecoveryActive,
       isRestartScheduled: () => recoveryController?.isRestartScheduled() ?? false,
       onTurnFinished: r.onTurnFinished,
-      beforeTurn: r.beforeTurn,
+      beforeTurn: async (...args) => {
+        await r.beforeTurn?.(...args);
+        await roleIdentity?.beforeTurn(args[0]);
+      },
+      prepareNewSession: (chatKey, options) => roleIdentity?.beforeTurn(chatKey, options),
       beforeDelivery: r.beforeDelivery
     },
     context: {
