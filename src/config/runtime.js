@@ -10,6 +10,9 @@ export function readRuntimeConfig(env, paths) {
     stateFile: env.STATE_FILE?.trim() || path.join(paths.stateRoot, "threads.json"),
     codexHome: paths.codexHome,
     codexSessionsDir: paths.codexSessionsDir,
+    ...(env.CODEX_ROLE_IDENTITY_CONFIG_FILE?.trim()
+      ? { codexRoleIdentityConfigFile: env.CODEX_ROLE_IDENTITY_CONFIG_FILE.trim() }
+      : {}),
     codexAccountsDir: env.CODEX_ACCOUNTS_DIR?.trim() || path.join(paths.stateRoot, "accounts"),
     codexAccountAdminUserIds: new Set(admins)
   };

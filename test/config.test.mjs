@@ -139,6 +139,16 @@ test("readConfig preserves the complete flat default contract", () => {
   });
 });
 
+test("role identity config path is opt-in and machine-local", () => {
+  assert.equal(readTestConfig().codexRoleIdentityConfigFile, undefined);
+  assert.equal(
+    readTestConfig({
+      CODEX_ROLE_IDENTITY_CONFIG_FILE: " /srv/codex/config/myfkents-roles.json ",
+    }).codexRoleIdentityConfigFile,
+    "/srv/codex/config/myfkents-roles.json",
+  );
+});
+
 test("readConfig applies stable defaults from env and options", () => {
   const config = readTestConfig();
   assert.equal(config.codexWorkdir, "/home/tester");
