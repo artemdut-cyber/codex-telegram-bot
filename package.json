@@ -40,7 +40,7 @@
     "systemd"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=20.19.0"
   },
   "scripts": {
     "audit:ci": "node scripts/npm_audit_gate.mjs",
