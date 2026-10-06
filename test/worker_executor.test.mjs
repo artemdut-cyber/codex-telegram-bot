@@ -123,6 +123,35 @@ test("immediate delivery confirmation after terminal observation records the fin
   });
 });
 
+test("raw turn completion cannot expose a terminal job before worker publication", async (t) => {
+  const store = await tempStore();
+  t.after(() => fs.rm(store.paths.stateDir, { recursive: true, force: true }));
+  const id = "raw-turn-completed";
+  const acceptedAt = "2020-01-01T00:00:00.000Z";
+  await store.writeJobState({ id, chatKey: "chat", acceptedAt, status: "accepted", lastSeq: 0 });
+  await runWorkerJob({
+    job: { id, chatKey: "chat", acceptedAt, lastSeq: 0 }, config: {}, store,
+    createThread: () => ({
+      async runStreamed() {
+        return { events: (async function* () {
+          yield { type: "turn.completed", usage: { total_tokens: 3 } };
+          const job = await readRawJobState(store, id);
+          assert.equal(job.status, "running");
+          assert.equal(job.completedAt, undefined);
+          assert.equal(job.terminalEvent, undefined);
+          assert.deepEqual(await store.confirmDelivery({
+            jobId: id, chatKey: "chat", deliveryStatus: "delivery_sent",
+            ambiguous: false, seq: job.lastSeq, sentAt: new Date().toISOString()
+          }), { recorded: false });
+        })() };
+      }
+    })
+  });
+  const job = await readRawJobState(store, id);
+  assert.equal(job.status, "completed");
+  assert.equal(job.lastSeq, job.terminalEvent.seq);
+});
+
 test("worker executor writes failed events", async (t) => {
   const store = await tempStore();
   t.after(() => fs.rm(store.paths.stateDir, { recursive: true, force: true }));

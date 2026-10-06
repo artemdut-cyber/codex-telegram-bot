@@ -73,7 +73,9 @@ export async function runWorkerJob({
         accountId: event.accountId || job.accountId || "default",
         chatKey: job.chatKey,
         threadId: job.threadId || thread?.id || "",
-        status: update.type === "turn_completed" ? "completed" : ""
+        // The stream can still fail or be interrupted after a raw turn event.
+        // Only worker.job.* publication commits the terminal job state.
+        status: ""
       });
     }
 

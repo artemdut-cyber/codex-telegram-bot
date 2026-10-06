@@ -55,6 +55,11 @@ export async function appendJobEvent(paths, jobId, event) {
     await ensureWorkerStateDir(paths);
     const job = await readJobStateUnlocked(paths, jobId);
     if (job?.eventArchive) throw new Error("Archived worker jobs are immutable; use a new job ID.");
+    // An already queued heartbeat/control callback may outlive execution.
+    // Preserve the terminal cursor, including a state-only interrupted commit.
+    if (terminalStatusFromJob(job?.status) && terminalStatusFromEvent(job?.terminalEvent)) {
+      throw new Error("Terminal worker jobs cannot accept new events; use a new job ID.");
+    }
     const ledger = await inspectJobEvents(paths, jobId);
     if (!ledger.monotonic) throw stateError(jobEventsPath(paths, jobId), "Event sequences are not unique and increasing.");
     if (ledger.size !== ledger.completeBytes) {
@@ -126,12 +131,14 @@ export async function readJobEvents(paths, jobId, options = {}) {
     }
     const terminalEvent = job?.terminalEvent;
     const afterSeq = Number(options.afterSeq || 0);
-    if (!terminalEvent || Number(terminalEvent.seq) <= afterSeq || job.eventArchive) return events;
+    if (!terminalEvent || Number(terminalEvent.seq) <= afterSeq) return events;
 
     // A stop between state publication and the event append remains replayable.
-    const committed = await readEventLog(jobEventsPath(paths, jobId), {
+    // Archives can also contain only the prefix preceding that interrupted append.
+    const committed = job.eventArchive ? events : await readEventLog(jobEventsPath(paths, jobId), {
       afterSeq: Number(terminalEvent.seq) - 1,
-      limit: 1
+      limit: 1,
+      includeIncomplete: false
     }).catch((error) => error.code === "ENOENT" ? [] : Promise.reject(error));
     if (committed.some((event) => Number(event.seq) === Number(terminalEvent.seq))) return events;
     return [...events, terminalEvent]
