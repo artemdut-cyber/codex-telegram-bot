@@ -1,3 +1,5 @@
+import { createSteeringBroker } from "./steering.js";
+import { createQuestionBroker } from "./questions.js";
 import fs from "node:fs/promises";
 import net from "node:net";
 import { createHash } from "node:crypto";
@@ -21,6 +23,8 @@ export function createWorkerServer({
 } = {}) {
   if (!config) throw new Error("config is required.");
   const controllers = new Map();
+  const questions = createQuestionBroker({ store, controllers });
+  const steering = createSteeringBroker({ store, controllers });
   const chatReservations = new Map();
   const codexClients = new Map();
   const jobTasks = new Map();
@@ -38,6 +42,16 @@ export function createWorkerServer({
   async function dispatch(request) {
     const method = request?.method || "";
     const params = request?.params || {};
+    if (method === "job/steer") return steering.submit(params);
+    if (method === "question/ask") {
+      const controller = controllers.get(params.jobId);
+      const job = await store.readJobState(params.jobId);
+      if (!controller || !job) throw new Error("Question job is not running");
+      try { return await questions.ask(job, { id: request.id, params: { isBlocking: true, questions: params.questions, threadId: job.threadId, turnId: job.id } }, controller.signal); }
+      catch (error) { controller.abort(error); throw error; }
+    }
+    if (method === "question/current") return questions.current(params.chatKey);
+    if (method === "question/answer") return questions.answer(params);
     if (method === "worker/archive") return maintenance.run(params);
     if (method === "job/delivered") return store.confirmDelivery(params.entry);
     if (method === "worker/status") {
@@ -52,7 +66,7 @@ export function createWorkerServer({
       if (updateAdmissionPaused(config)) throw new Error("Codex update is waiting for idle; new jobs are paused.");
       return store.withAdmissionLock(() => {
         if (admissionError) throw admissionError;
-        return startJob({ config, store, controllers, chatReservations, codexClients, jobTasks, executeJob, logger, heartbeatMs, job: params.job, onAdmissionFailure: (error) => { admissionError = error; } });
+        return startJob({ config, store, controllers, chatReservations, codexClients, jobTasks, executeJob, logger, heartbeatMs, questions, steering, job: params.job, onAdmissionFailure: (error) => { admissionError = error; } });
       });
     }
     throw new Error(`Unknown worker method: ${method}`);
@@ -122,7 +136,7 @@ export function createWorkerServer({
   };
 }
 
-async function startJob({ config, store, controllers, chatReservations, codexClients, jobTasks, executeJob, logger, heartbeatMs, job, onAdmissionFailure }) {
+async function startJob({ config, store, controllers, chatReservations, codexClients, jobTasks, executeJob, logger, heartbeatMs, questions, steering, job, onAdmissionFailure }) {
   if (!job?.id) throw new Error("job/start requires job.id.");
   if (typeof job.id !== "string" || !/^[a-zA-Z0-9._:-]{1,120}$/.test(job.id)) throw new Error("job/start requires a safe job ID of at most 120 characters.");
   if (!job.chatKey) throw new Error("job/start requires job.chatKey.");
@@ -160,11 +174,21 @@ async function startJob({ config, store, controllers, chatReservations, codexCli
       transport: accepted.transport
     });
   } catch (error) {
-    // Never execute after an incomplete admission. A failed tombstone also makes
-    // the same ID retry idempotent. If rollback fails, the durable reservation
-    // remains conservative and startup reconciliation finishes recovery.
+    // Never execute after an incomplete admission. Publish the terminal event
+    // first so status, timestamp, event, and cursor share the store's atomic
+    // terminal commit. If any rollback step fails, keep admission closed.
     try {
-      await store.writeJobState({ ...accepted, lastSeq: undefined, status: "failed", failureReason: "worker_admission", completedAt: new Date().toISOString() });
+      const completedAt = new Date().toISOString();
+      await store.appendJobEvent(job.id, {
+        type: "worker.job.failed",
+        status: "failed",
+        chatKey: accepted.chatKey,
+        threadId: accepted.threadId || "",
+        reason: "worker_admission",
+        message: "Worker admission failed; job was not executed.",
+        completedAt
+      });
+      await store.writeJobState({ id: job.id, requestHash, failureReason: "worker_admission" });
       await store.removeActiveJob(job.id);
     } catch (rollbackError) {
       logger.warn?.("worker admission rollback failed:", rollbackError instanceof Error ? rollbackError.message : String(rollbackError));
@@ -196,7 +220,7 @@ async function startJob({ config, store, controllers, chatReservations, codexCli
     if (heartbeat) clearInterval(heartbeat);
   };
   controller.signal.addEventListener("abort", stopHeartbeat, { once: true });
-  const task = Promise.resolve().then(() => executeJob({ job: accepted, config, store, signal: controller.signal, codexClients }))
+  const task = Promise.resolve().then(() => executeJob({ job: accepted, config, store, signal: controller.signal, codexClients, onSteerReady: (control) => steering.register(job.id, control), onUserInput: (request, requestSignal) => questions.ask(accepted, request, requestSignal ? globalThis.AbortSignal.any([controller.signal, requestSignal]) : controller.signal) }))
     .catch((error) => {
       logger.warn?.("worker job failed:", error instanceof Error ? error.message : String(error));
     })
@@ -230,24 +254,19 @@ async function reconcileOrphanedJobs(store) {
     const job = await store.readJobState(jobId);
     if (!isTerminalWorkerStatus(job?.status)) {
       const completedAt = new Date().toISOString();
-      await store.writeJobState({
-        ...(entry ?? {}),
-        ...(job ?? {}),
-        id: jobId,
-        status: "failed",
-        failureReason: WORKER_RESTART_FAILURE_REASON,
-        error: WORKER_RESTART_FAILURE_MESSAGE,
-        completedAt
-      });
+      const failureReason = job?.userQuestion ? "question_interrupted" : Object.keys(job?.steers || {}).length ? "steer_interrupted" : WORKER_RESTART_FAILURE_REASON;
+      const error = job?.userQuestion ? "Pending decision interrupted by worker restart; explicit recovery required." : Object.keys(job?.steers || {}).length ? "Steered job interrupted; inspect prior input before recovery." : WORKER_RESTART_FAILURE_MESSAGE;
       await store.appendJobEvent(jobId, {
         type: "worker.job.failed",
         status: "failed",
         chatKey: job?.chatKey ?? entry?.chatKey,
         threadId: job?.threadId ?? entry?.threadId ?? "",
-        reason: WORKER_RESTART_FAILURE_REASON,
-        message: WORKER_RESTART_FAILURE_MESSAGE,
+        reason: failureReason,
+        message: error,
+        completedAt,
         at: completedAt
       });
+      await store.writeJobState({ id: jobId, failureReason, error });
     }
     await store.removeActiveJob(indexId);
   }
@@ -257,7 +276,7 @@ async function workerStatus(store, controllers) {
   const active = await store.readActiveJobs();
   return {
     status: "ok",
-    capabilities: ["accounts-v1", "log-archive-v1"],
+    capabilities: ["accounts-v1", "log-archive-v1", "questions-v1", "steer-v1"],
     activeJobs: Object.values(active.jobs),
     runningJobIds: [...controllers.keys()]
   };

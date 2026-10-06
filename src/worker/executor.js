@@ -1,3 +1,5 @@
+import process from "node:process";
+import { fileURLToPath } from "node:url";
 import { localizedErrorDetails } from "../i18n.js";
 import { buildInput } from "../codex/input.js";
 import { applyCodexStreamEvent, codexStreamResult, createCodexStreamState } from "../codex/stream.js";
@@ -10,6 +12,8 @@ export async function runWorkerJob({
   store,
   signal,
   codexClients = new Map(),
+  onUserInput,
+  onSteerReady,
   createThread = createCodexThreadDefault,
   now = () => new Date()
 } = {}) {
@@ -31,9 +35,10 @@ export async function runWorkerJob({
   const input = Array.isArray(job.input)
     ? job.input
     : buildInput(job.inputText || job.text || "", job.imagePaths || []);
-  const turnOptions = { signal };
+  const turnOptions = { signal, onUserInput, onSteerReady };
   if (job.outputSchema) turnOptions.outputSchema = job.outputSchema;
 
+  let result;
   try {
     thread = createThread({
       transport: job.transport || config.codexTransport,
@@ -41,7 +46,7 @@ export async function runWorkerJob({
       accountId: job.accountId || "default",
       attemptState: job.accountAttemptState || {},
       effectiveOptions: job.effectiveOptions || {},
-      config,
+      config: config.codexInteractiveQuestions ? questionConfig(config, job.id) : config,
       codexClients
     });
     const { events } = await thread.runStreamed(input, turnOptions);
@@ -72,44 +77,54 @@ export async function runWorkerJob({
       });
     }
 
-    const result = codexStreamResult(streamState);
-    await store.appendJobEvent(job.id, {
-      type: "worker.job.completed",
-      status: "completed",
-      chatKey: job.chatKey,
-      threadId: job.threadId || thread?.id || "",
-      accountId: thread.accountId || job.accountId || "default",
-      finalResponseLength: result.finalResponse.length,
-      itemCount: result.items.length,
-      usage: result.usage ?? null
-    });
-    await store.writeJobState({
-      ...job,
-      status: "completed",
-      threadId: job.threadId || thread?.id || "",
-      completedAt: now().toISOString()
-    });
-    return result;
+    result = codexStreamResult(streamState);
   } catch (error) {
     const aborted = signal?.aborted === true;
+    const waiting = (await store.readJobState(job.id))?.userQuestion;
+    const failureReason = waiting && waiting.state !== "answered" ? "question_interrupted" : undefined;
     const type = aborted ? "worker.job.cancelled" : "worker.job.failed";
-    const status = aborted ? "cancelled" : "failed";
+    const completedAt = now().toISOString();
     await store.appendJobEvent(job.id, {
       type,
-      status,
+      status: aborted ? "cancelled" : "failed",
       chatKey: job.chatKey,
       threadId: job.threadId || thread?.id || "",
+      reason: failureReason,
+      completedAt,
       ...localizedErrorDetails(error),
       message: error instanceof Error ? error.message : String(error)
     });
     await store.writeJobState({
-      ...job,
-      status,
-      threadId: job.threadId || thread?.id || "",
-      completedAt: now().toISOString(),
+      id: job.id,
       ...localizedErrorDetails(error),
+      failureReason,
       error: error instanceof Error ? error.message : String(error)
     });
     throw error;
   }
+
+  const completedAt = now().toISOString();
+  await store.appendJobEvent(job.id, {
+    type: "worker.job.completed",
+    status: "completed",
+    chatKey: job.chatKey,
+    threadId: job.threadId || thread?.id || "",
+    accountId: thread.accountId || job.accountId || "default",
+    completedAt,
+    finalResponseLength: result.finalResponse.length,
+    itemCount: result.items.length,
+    usage: result.usage ?? null
+  });
+  return result;
+}
+
+function questionConfig(config, jobId) {
+  return { ...config, codexConfig: { ...config.codexConfig,
+    "mcp_servers.telegram_questions": {
+      command: process.execPath,
+      args: [fileURLToPath(new URL("../../scripts/telegram-question-mcp.mjs", import.meta.url))],
+      env: { TELEGRAM_QUESTION_SOCKET: config.codexWorkerSocket, TELEGRAM_QUESTION_JOB: jobId },
+      tool_timeout_sec: 604800
+    }
+  } };
 }

@@ -50,6 +50,48 @@ test("worker store serializes concurrent event appends", async () => {
   assert.equal((await store.readJobEvents("job-1", { afterSeq: 0, limit: 50 })).length, 20);
 });
 
+test("terminal event publication reserves a timestamp and recovers an interrupted append", async () => {
+  const { store } = await tempStore();
+  for (const [status, type] of [
+    ["completed", "worker.job.completed"],
+    ["failed", "worker.job.failed"],
+    ["cancelled", "worker.job.cancelled"]
+  ]) {
+    const id = `terminal-${status}`;
+    const event = await store.appendJobEvent(id, { type, status, chatKey: "chat" });
+    const job = await store.readJobState(id);
+    assert.equal(job.status, status);
+    assert.ok(Number.isFinite(Date.parse(job.completedAt)));
+    assert.equal(job.completedAt, event.completedAt);
+    assert.equal(job.lastSeq, event.seq);
+    assert.equal((await store.readJobEvents(id)).at(-1).seq, job.lastSeq);
+  }
+
+  const completedAt = "2026-10-06T04:47:05.000Z";
+  await store.writeJobState({
+    id: "interrupted-terminal",
+    status: "completed",
+    completedAt,
+    lastSeq: 1,
+    terminalEvent: {
+      seq: 1,
+      type: "worker.job.completed",
+      status: "completed",
+      completedAt,
+      at: completedAt
+    }
+  });
+  assert.deepEqual(await store.readJobEvents("interrupted-terminal"), [
+    {
+      seq: 1,
+      type: "worker.job.completed",
+      status: "completed",
+      completedAt,
+      at: completedAt
+    }
+  ]);
+});
+
 test("worker store ignores only an incomplete trailing event until it is complete", async () => {
   const { store } = await tempStore();
   const first = JSON.stringify({ seq: 1, type: "worker.job.started" });
