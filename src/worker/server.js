@@ -160,11 +160,21 @@ async function startJob({ config, store, controllers, chatReservations, codexCli
       transport: accepted.transport
     });
   } catch (error) {
-    // Never execute after an incomplete admission. A failed tombstone also makes
-    // the same ID retry idempotent. If rollback fails, the durable reservation
-    // remains conservative and startup reconciliation finishes recovery.
+    // Never execute after an incomplete admission. Publish the terminal event
+    // first so status, timestamp, event, and cursor share the store's atomic
+    // terminal commit. If any rollback step fails, keep admission closed.
     try {
-      await store.writeJobState({ ...accepted, lastSeq: undefined, status: "failed", failureReason: "worker_admission", completedAt: new Date().toISOString() });
+      const completedAt = new Date().toISOString();
+      await store.appendJobEvent(job.id, {
+        type: "worker.job.failed",
+        status: "failed",
+        chatKey: accepted.chatKey,
+        threadId: accepted.threadId || "",
+        reason: "worker_admission",
+        message: "Worker admission failed; job was not executed.",
+        completedAt
+      });
+      await store.writeJobState({ id: job.id, requestHash, failureReason: "worker_admission" });
       await store.removeActiveJob(job.id);
     } catch (rollbackError) {
       logger.warn?.("worker admission rollback failed:", rollbackError instanceof Error ? rollbackError.message : String(rollbackError));
@@ -230,15 +240,6 @@ async function reconcileOrphanedJobs(store) {
     const job = await store.readJobState(jobId);
     if (!isTerminalWorkerStatus(job?.status)) {
       const completedAt = new Date().toISOString();
-      await store.writeJobState({
-        ...(entry ?? {}),
-        ...(job ?? {}),
-        id: jobId,
-        status: "failed",
-        failureReason: WORKER_RESTART_FAILURE_REASON,
-        error: WORKER_RESTART_FAILURE_MESSAGE,
-        completedAt
-      });
       await store.appendJobEvent(jobId, {
         type: "worker.job.failed",
         status: "failed",
@@ -246,7 +247,13 @@ async function reconcileOrphanedJobs(store) {
         threadId: job?.threadId ?? entry?.threadId ?? "",
         reason: WORKER_RESTART_FAILURE_REASON,
         message: WORKER_RESTART_FAILURE_MESSAGE,
+        completedAt,
         at: completedAt
+      });
+      await store.writeJobState({
+        id: jobId,
+        failureReason: WORKER_RESTART_FAILURE_REASON,
+        error: WORKER_RESTART_FAILURE_MESSAGE
       });
     }
     await store.removeActiveJob(indexId);
