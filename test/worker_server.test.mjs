@@ -389,7 +389,7 @@ test("admission failures rollback without executing and allow a new ID", async (
 
 test("failed terminal publication keeps the admission reservation and blocks further work", async () => {
   let starts = 0;
-  const { worker, client, store } = await startServer(async () => { starts += 1; });
+  const { config, worker, client, store } = await startServer(async () => { starts += 1; });
   const append = store.appendJobEvent;
   store.appendJobEvent = async (jobId, event) => {
     if (event.type === "worker.job.accepted") {
@@ -410,6 +410,20 @@ test("failed terminal publication keeps the admission reservation and blocks fur
     await assert.rejects(client.status(), /recovery is required/);
   } finally {
     await worker.close();
+    store.appendJobEvent = append;
+  }
+  const recovered = createWorkerServer({ config, store, executeJob: async () => { starts += 1; }, logger: { warn() {} } });
+  await recovered.listen();
+  try {
+    const raw = await assertRawTerminalFailure(store, "terminal-publication-failure", "worker_restart");
+    assert.equal(raw.error, "worker restarted before job completed");
+    assert.deepEqual((await store.readActiveJobs()).jobs, {});
+    assert.equal((await client.startJob({ id: "terminal-publication-failure", chatKey: "chat" })).status, "failed");
+    assert.equal(starts, 0);
+    await client.startJob({ id: "after-recovery", chatKey: "another" });
+    assert.equal(starts, 1);
+  } finally {
+    await recovered.close();
   }
 });
 
