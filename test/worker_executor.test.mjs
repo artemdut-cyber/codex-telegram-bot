@@ -13,6 +13,10 @@ async function tempStore() {
   return store;
 }
 
+async function readRawJobState(store, jobId) {
+  return JSON.parse(await fs.readFile(path.join(store.paths.jobsDir, `${jobId}.json`), "utf8"));
+}
+
 for (const [effort, transport] of [["max", "sdk"], ["ultra", "app-server-direct"]]) {
   test(`worker executor writes stream events and completion with ${effort} reasoning`, async (t) => {
     // Given
@@ -130,7 +134,7 @@ test("worker executor writes failed events", async (t) => {
   });
   await assert.rejects(
     () => runWorkerJob({
-      job: { id: "job-1", chatKey: "chat-1", inputText: "hello", effectiveOptions: {} },
+      job: { id: "job-1", chatKey: "chat-1", inputText: "hello", effectiveOptions: {}, lastSeq: 0 },
       config: { codexTransport: "sdk" },
       store,
       signal: new AbortController().signal,
@@ -144,6 +148,10 @@ test("worker executor writes failed events", async (t) => {
   assert.equal(job.status, "failed");
   assert.ok(Number.isFinite(Date.parse(job.completedAt)));
   assert.equal(events.at(-1).completedAt, job.completedAt);
+  const rawJob = await readRawJobState(store, "job-1");
+  assert.equal(rawJob.status, "failed");
+  assert.equal(rawJob.completedAt, events.at(-1).completedAt);
+  assert.equal(rawJob.lastSeq, events.at(-1).seq);
 });
 
 test("worker cancellation publishes a timestamp with the terminal event", async (t) => {
@@ -152,7 +160,7 @@ test("worker cancellation publishes a timestamp with the terminal event", async 
   const controller = new AbortController();
   controller.abort(new Error("cancelled"));
   await assert.rejects(runWorkerJob({
-    job: { id: "cancelled", chatKey: "chat-1", inputText: "hello" },
+    job: { id: "cancelled", chatKey: "chat-1", inputText: "hello", lastSeq: 0 },
     config: {},
     store,
     signal: controller.signal,
@@ -163,6 +171,10 @@ test("worker cancellation publishes a timestamp with the terminal event", async 
   assert.equal(job.status, "cancelled");
   assert.ok(Number.isFinite(Date.parse(job.completedAt)));
   assert.equal(event.completedAt, job.completedAt);
+  const rawJob = await readRawJobState(store, "cancelled");
+  assert.equal(rawJob.status, "cancelled");
+  assert.equal(rawJob.completedAt, event.completedAt);
+  assert.equal(rawJob.lastSeq, event.seq);
 });
 
 test("a terminal streamed failure never produces a completed worker job", async (t) => {

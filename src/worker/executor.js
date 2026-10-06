@@ -83,11 +83,10 @@ export async function runWorkerJob({
     const waiting = (await store.readJobState(job.id))?.userQuestion;
     const failureReason = waiting && waiting.state !== "answered" ? "question_interrupted" : undefined;
     const type = aborted ? "worker.job.cancelled" : "worker.job.failed";
-    const status = aborted ? "cancelled" : "failed";
     const completedAt = now().toISOString();
     await store.appendJobEvent(job.id, {
       type,
-      status,
+      status: aborted ? "cancelled" : "failed",
       chatKey: job.chatKey,
       threadId: job.threadId || thread?.id || "",
       reason: failureReason,
@@ -96,10 +95,7 @@ export async function runWorkerJob({
       message: error instanceof Error ? error.message : String(error)
     });
     await store.writeJobState({
-      ...job,
-      status,
-      threadId: job.threadId || thread?.id || "",
-      completedAt,
+      id: job.id,
       ...localizedErrorDetails(error),
       failureReason,
       error: error instanceof Error ? error.message : String(error)
