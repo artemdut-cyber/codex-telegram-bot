@@ -1,4 +1,4 @@
-# MyFkenTS Dev / Review / QA role identity
+# Telegram Dev / Review / QA role identity
 
 This opt-in control-plane feature is enabled by `CODEX_ROLE_IDENTITY_CONFIG_FILE`, which points to a machine-local JSON file outside the application repository. The file contains trusted numeric Telegram chat/topic IDs and exact workspace paths; topic display names and Telegram message text are never consulted.
 
@@ -43,6 +43,45 @@ For a new session or `/new`, the turn lifecycle resolves the exact `(chatId, top
 An unmapped topic whose workspace is the MyFkenTS repository, a workspace/project mismatch, unavailable `main`, missing common/role policy, or invalid config aborts the turn before Codex starts. The bot does not fall back to task branch instructions. Ordinary private chats and other repositories remain outside this opt-in path.
 
 The config and workspace-local Git exclude survive a bot restart; every new session deterministically regenerates the override, so changed governance on accepted `main` and stale/missing files are reconciled at the next `/new`.
+
+## AgentDevTeam Platform project selection
+
+Telegram role identity mapping v1 supports `artemdut-cyber/MyFkenTS` and `artemdut-cyber/agentdevteam-platform`. To select AgentDevTeam Platform, set the top-level `project` and repeat that exact repository in all three role mappings. Use the verified numeric Telegram topic IDs, one distinct absolute workspace per role, and the role policy path that exists on the selected repository's accepted `main`:
+
+```json
+{
+  "version": 1,
+  "project": "artemdut-cyber/agentdevteam-platform",
+  "mappings": [
+    {
+      "chatId": "<verified-chat-id>",
+      "topicId": "<dev-topic-id>",
+      "workspace": "/absolute/path/to/platform-dev",
+      "project": "artemdut-cyber/agentdevteam-platform",
+      "roleId": "dev",
+      "rolePolicyPath": "<verified-dev-policy-path>"
+    },
+    {
+      "chatId": "<verified-chat-id>",
+      "topicId": "<review-topic-id>",
+      "workspace": "/absolute/path/to/platform-review",
+      "project": "artemdut-cyber/agentdevteam-platform",
+      "roleId": "review",
+      "rolePolicyPath": "<verified-review-policy-path>"
+    },
+    {
+      "chatId": "<verified-chat-id>",
+      "topicId": "<qa-topic-id>",
+      "workspace": "/absolute/path/to/platform-qa",
+      "project": "artemdut-cyber/agentdevteam-platform",
+      "roleId": "qa",
+      "rolePolicyPath": "<verified-qa-policy-path>"
+    }
+  ]
+}
+```
+
+The top-level project is optional only for the existing MyFkenTS format shown above. If omitted, the loader selects MyFkenTS and rejects mappings for any other repository. Mapping entries cannot mix repositories. A topic bound to the selected repository but missing from the mapping, a workspace mismatch, or an origin mismatch fails closed, including when a Telegram session already exists. Telegram role identity accepts only mapping `version: 1`; the separate Dev→QA Controller mapping v2 is not interchangeable.
 
 ## Deployment prerequisites
 
