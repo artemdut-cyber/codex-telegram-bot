@@ -13,6 +13,7 @@ import {
 
 const execFile = promisify(execFileCallback);
 const PROJECT = "artemdut-cyber/MyFkenTS";
+const PLATFORM_PROJECT = "artemdut-cyber/agentdevteam-platform";
 
 test("role mapping is explicit, complete, unique and restart-persistent", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "role-map-"));
@@ -25,6 +26,7 @@ test("role mapping is explicit, complete, unique and restart-persistent", async 
   const first = await loadRoleIdentityConfig(file);
   const afterRestart = await loadRoleIdentityConfig(file);
   assert.deepEqual(first, afterRestart);
+  assert.deepEqual(Object.keys(first), ["mappings"]);
   assert.deepEqual(first.mappings.map(({ roleId }) => roleId).sort(), [
     "dev",
     "qa",
@@ -41,6 +43,68 @@ test("role mapping is explicit, complete, unique and restart-persistent", async 
   );
   await fs.chmod(file, 0o666);
   await assert.rejects(loadRoleIdentityConfig(file), /invalid/);
+});
+
+test("AgentDevTeam Platform mapping v1 requires an explicit, unmixed project", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "role-map-platform-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "roles.json");
+  const platformMappings = mappings(root, PLATFORM_PROJECT);
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      version: 1,
+      project: PLATFORM_PROJECT,
+      mappings: platformMappings,
+    }),
+  );
+  const config = await loadRoleIdentityConfig(file);
+  assert.ok(
+    config.mappings.every(({ project }) => project === PLATFORM_PROJECT),
+  );
+  assert.deepEqual(config.mappings.map(({ roleId }) => roleId).sort(), [
+    "dev",
+    "qa",
+    "review",
+  ]);
+  assert.equal(new Set(config.mappings.map(({ topicId }) => topicId)).size, 3);
+  assert.equal(
+    new Set(config.mappings.map(({ workspace }) => workspace)).size,
+    3,
+  );
+
+  await fs.writeFile(
+    file,
+    JSON.stringify({ version: 1, mappings: platformMappings }),
+  );
+  await assert.rejects(loadRoleIdentityConfig(file), /invalid, mixed-project/);
+
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      version: 1,
+      project: PLATFORM_PROJECT,
+      mappings: platformMappings.map((entry, index) =>
+        index === 2 ? { ...entry, project: PROJECT } : entry,
+      ),
+    }),
+  );
+  await assert.rejects(loadRoleIdentityConfig(file), /mixed-project/);
+});
+
+test("Telegram role mapping v1 rejects Dev→QA Controller mapping v2", async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "role-map-v2-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "roles.json");
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      version: 2,
+      project: PLATFORM_PROJECT,
+      mappings: mappings(root, PLATFORM_PROJECT),
+    }),
+  );
+  await assert.rejects(loadRoleIdentityConfig(file), /version 1 mappings/);
 });
 
 test("composes the complete common constitution with one canonical role policy", () => {
@@ -147,6 +211,34 @@ test("unknown MyFkenTS topic and mismatched workspace fail closed", async (t) =>
   );
 });
 
+test("AgentDevTeam Platform topic requires its explicit mapping and trusted workspace/repository", async (t) => {
+  const fixture = await makeRepository(t, PLATFORM_PROJECT);
+  const config = await loadRoleIdentityConfig(fixture.mappingFile);
+  const sync = createRoleIdentitySynchronizer({
+    config,
+    chats: fixture.chats,
+    options: fixture.options,
+    run: fixture.run,
+  });
+  fixture.chat.threadId = "existing-thread";
+  await assert.rejects(
+    sync.beforeTurn("-100123:topic:999"),
+    /Unknown AgentDevTeam Platform topic/,
+  );
+  fixture.chat.threadId = "";
+  fixture.chat.forumBinding.cwd = path.join(fixture.root, "other-workspace");
+  await assert.rejects(
+    sync.beforeTurn(fixture.chatKey),
+    /workspace does not match/,
+  );
+  fixture.chat.forumBinding.cwd = fixture.workspace;
+  fixture.setRemoteProject(PROJECT);
+  await assert.rejects(
+    sync.beforeTurn(fixture.chatKey),
+    /does not match its trusted mapping/,
+  );
+});
+
 test("a trusted role topic without its persisted workspace binding fails closed", async (t) => {
   const fixture = await makeRepository(t);
   const config = await loadRoleIdentityConfig(fixture.mappingFile);
@@ -174,18 +266,18 @@ test("unbound private topics remain untouched", async () => {
   });
 });
 
-function mappings(workspace) {
+function mappings(workspace, project = PROJECT) {
   return ["dev", "review", "qa"].map((roleId, index) => ({
     chatId: "-100123",
     topicId: String(201 + index),
     workspace: path.join(workspace, roleId),
-    project: PROJECT,
+    project,
     roleId,
     rolePolicyPath: `policies/${roleId}.md`,
   }));
 }
 
-async function makeRepository(t) {
+async function makeRepository(t, project = PROJECT) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "role-sync-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const workspace = path.join(root, "repo");
@@ -218,18 +310,19 @@ async function makeRepository(t) {
     path.join(workspace, "policies", "dev.md"),
     "MUTABLE TASK BRANCH POLICY\n",
   );
-  const roleMappings = mappings(root);
+  const roleMappings = mappings(root, project);
   roleMappings[0].workspace = workspace;
   const mappingFile = path.join(root, "roles.json");
   await fs.writeFile(
     mappingFile,
-    JSON.stringify({ version: 1, mappings: roleMappings }),
+    JSON.stringify({ version: 1, project, mappings: roleMappings }),
   );
   const chatKey = "-100123:topic:201";
   const chat = {
     forumBinding: { cwd: workspace },
     options: { workingDirectory: workspace },
   };
+  let remoteProject = project;
   const realRun = async (...args) => {
     if (
       args[0] === "git" &&
@@ -237,7 +330,7 @@ async function makeRepository(t) {
       args[1][1] === "get-url"
     ) {
       return {
-        stdout: "https://github.com/artemdut-cyber/MyFkenTS.git\n",
+        stdout: `https://github.com/${remoteProject}.git\n`,
         stderr: "",
       };
     }
@@ -252,6 +345,9 @@ async function makeRepository(t) {
     chats: { get: () => chat },
     options: { get: () => ({ workingDirectory: workspace }) },
     run: realRun,
+    setRemoteProject(value) {
+      remoteProject = value;
+    },
   };
 }
 

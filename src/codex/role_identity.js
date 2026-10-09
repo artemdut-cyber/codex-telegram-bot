@@ -5,7 +5,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const EXPECTED_PROJECT = "artemdut-cyber/MyFkenTS";
+const DEFAULT_PROJECT = "artemdut-cyber/MyFkenTS";
+const SUPPORTED_PROJECTS = new Map([
+  [DEFAULT_PROJECT, "MyFkenTS"],
+  ["artemdut-cyber/agentdevteam-platform", "AgentDevTeam Platform"],
+]);
 const ROLE_IDS = new Set(["dev", "review", "qa"]);
 const OVERRIDE_NAME = "AGENTS.override.md";
 const EXCLUDE_ENTRY = "/AGENTS.override.md";
@@ -35,9 +39,13 @@ export async function loadRoleIdentityConfig(filePath) {
     parsed.mappings.length !== 3
   ) {
     throw new Error(
-      "MyFkenTS role identity config must contain exactly three version 1 mappings.",
+      "Role identity config must contain exactly three version 1 mappings.",
     );
   }
+  const selectedProject =
+    parsed.project === undefined ? DEFAULT_PROJECT : String(parsed.project);
+  if (!SUPPORTED_PROJECTS.has(selectedProject))
+    throw new Error("Role identity config selects an unsupported project.");
   const seenTopics = new Set();
   const seenRoles = new Set();
   const seenWorkspaces = new Set();
@@ -45,7 +53,7 @@ export async function loadRoleIdentityConfig(filePath) {
     const chatId = String(entry?.chatId || "");
     const topicId = String(entry?.topicId || "");
     const workspace = String(entry?.workspace || "");
-    const project = String(entry?.project || "");
+    const entryProject = String(entry?.project || "");
     const roleId = String(entry?.roleId || "");
     const rolePolicyPath = String(entry?.rolePolicyPath || "");
     const key = `${chatId}:topic:${topicId}`;
@@ -53,7 +61,7 @@ export async function loadRoleIdentityConfig(filePath) {
       !/^-?\d+$/.test(chatId) ||
       !/^\d+$/.test(topicId) ||
       !path.isAbsolute(workspace) ||
-      project !== EXPECTED_PROJECT ||
+      entryProject !== selectedProject ||
       !ROLE_IDS.has(roleId) ||
       !isRepoPath(rolePolicyPath) ||
       seenTopics.has(key) ||
@@ -61,7 +69,7 @@ export async function loadRoleIdentityConfig(filePath) {
       seenWorkspaces.has(path.resolve(workspace))
     ) {
       throw new Error(
-        "MyFkenTS role identity config contains an invalid or duplicate mapping.",
+        "Role identity config contains an invalid, mixed-project or duplicate mapping.",
       );
     }
     seenTopics.add(key);
@@ -71,7 +79,7 @@ export async function loadRoleIdentityConfig(filePath) {
       chatId,
       topicId,
       workspace: path.resolve(workspace),
-      project,
+      project: entryProject,
       roleId,
       rolePolicyPath,
       key,
@@ -79,7 +87,7 @@ export async function loadRoleIdentityConfig(filePath) {
   });
   if (seenRoles.size !== 3)
     throw new Error(
-      "MyFkenTS role identity config must map Dev, Review and QA once each.",
+      "Role identity config must map Dev, Review and QA once each.",
     );
   return { mappings };
 }
@@ -92,6 +100,8 @@ export function createRoleIdentitySynchronizer({
 }) {
   if (!config?.mappings)
     throw new TypeError("validated role identity config is required.");
+  const configuredProject =
+    config.project || config.mappings[0]?.project || DEFAULT_PROJECT;
 
   async function beforeTurn(chatKey, { forceNewSession = false } = {}) {
     const chat = chats.get(chatKey);
@@ -105,10 +115,53 @@ export function createRoleIdentitySynchronizer({
     if (!cwd) {
       if (mapping)
         throw new Error(
-          "MyFkenTS trusted role topic is missing its bound workspace.",
+          `${projectLabel(configuredProject)} trusted role topic is missing its bound workspace.`,
         );
       return { synchronized: false, reason: "not-project-topic" };
     }
+    const effectiveCwd = options.get(chatKey).workingDirectory;
+    if (effectiveCwd !== cwd)
+      throw new Error(
+        `${projectLabel(configuredProject)} role identity workspace does not match the trusted topic binding.`,
+      );
+    if (!identity)
+      throw new Error(
+        `${projectLabel(configuredProject)} role identity requires a registered Telegram topic.`,
+      );
+    if (!mapping) {
+      const repo = await originRepository(cwd, run);
+      if (repo === configuredProject)
+        throw new Error(
+          `Unknown ${projectLabel(configuredProject)} topic; refusing to start Codex without a trusted role mapping.`,
+        );
+      const threadId =
+        chat.threadId ||
+        chat.accountThreads?.[
+          chat.threadAccountId || chat.accountId || "default"
+        ] ||
+        "";
+      if (threadId && !forceNewSession)
+        return { synchronized: false, reason: "existing-session" };
+      return { synchronized: false, reason: "not-managed-project" };
+    }
+    if (path.resolve(cwd) !== mapping.workspace)
+      throw new Error(
+        `${projectLabel(configuredProject)} role identity workspace does not match its trusted mapping.`,
+      );
+    const actualWorkspace = await fs.realpath(cwd).catch(() => "");
+    const actualMappingWorkspace = await fs
+      .realpath(mapping.workspace)
+      .catch(() => "");
+    if (!actualWorkspace || actualWorkspace !== actualMappingWorkspace) {
+      throw new Error(
+        `${projectLabel(configuredProject)} role identity workspace is missing or ambiguous.`,
+      );
+    }
+    const repo = await originRepository(cwd, run);
+    if (repo !== mapping.project)
+      throw new Error(
+        `${projectLabel(configuredProject)} topic project does not match its trusted mapping.`,
+      );
     const threadId =
       chat.threadId ||
       chat.accountThreads?.[
@@ -117,43 +170,6 @@ export function createRoleIdentitySynchronizer({
       "";
     if (threadId && !forceNewSession)
       return { synchronized: false, reason: "existing-session" };
-
-    const effectiveCwd = options.get(chatKey).workingDirectory;
-    if (effectiveCwd !== cwd)
-      throw new Error(
-        "MyFkenTS role identity workspace does not match the trusted topic binding.",
-      );
-    if (!identity)
-      throw new Error(
-        "MyFkenTS role identity requires a registered Telegram topic.",
-      );
-    if (!mapping) {
-      const repo = await originRepository(cwd, run);
-      if (repo === EXPECTED_PROJECT)
-        throw new Error(
-          "Unknown MyFkenTS topic; refusing to start Codex without a trusted role mapping.",
-        );
-      return { synchronized: false, reason: "not-managed-project" };
-    }
-    if (path.resolve(cwd) !== mapping.workspace)
-      throw new Error(
-        "MyFkenTS role identity workspace does not match its trusted mapping.",
-      );
-
-    const actualWorkspace = await fs.realpath(cwd).catch(() => "");
-    const actualMappingWorkspace = await fs
-      .realpath(mapping.workspace)
-      .catch(() => "");
-    if (!actualWorkspace || actualWorkspace !== actualMappingWorkspace) {
-      throw new Error(
-        "MyFkenTS role identity workspace is missing or ambiguous.",
-      );
-    }
-    const repo = await originRepository(cwd, run);
-    if (repo !== mapping.project)
-      throw new Error(
-        "MyFkenTS topic project does not match its trusted mapping.",
-      );
 
     await ensureExcluded(cwd, run);
     const statusBefore = await git(
@@ -217,9 +233,7 @@ export function composeInstructions({ common, policy, governanceSha, roleId }) {
     !/^[0-9a-f]{40,64}$/i.test(String(governanceSha || "")) ||
     !ROLE_IDS.has(roleId)
   ) {
-    throw new Error(
-      "Accepted MyFkenTS common and role instructions are required.",
-    );
+    throw new Error("Accepted common and role instructions are required.");
   }
   return `<!-- Generated locally by codex-telegram-bot. Governance: ${governanceSha}; role_id: ${roleId}. -->\n${common.trimEnd()}\n\n---\n\n${policy.trim()}\n`;
 }
@@ -237,9 +251,15 @@ function isRepoPath(value) {
   );
 }
 
+function projectLabel(project) {
+  return SUPPORTED_PROJECTS.get(project) || "Managed project";
+}
+
 async function originRepository(cwd, run) {
   const remote = await git(cwd, ["remote", "get-url", "origin"], run);
-  const match = remote.match(/(?:github\.com[:/])([^/]+\/[^/]+?)(?:\.git)?$/i);
+  const match = remote.match(
+    /^(?:https?:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+\/[^/]+?)(?:\.git)?$/i,
+  );
   return match?.[1] || "";
 }
 
