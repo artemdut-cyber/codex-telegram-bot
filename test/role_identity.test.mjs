@@ -19,9 +19,11 @@ test("role mapping is explicit, complete, unique and restart-persistent", async 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "role-map-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, "roles.json");
+  const roleMappings = mappings(root);
+  await createWorkspaceDirectories(roleMappings);
   await fs.writeFile(
     file,
-    JSON.stringify({ version: 1, mappings: mappings(root) }),
+    JSON.stringify({ version: 1, mappings: roleMappings }),
   );
   const first = await loadRoleIdentityConfig(file);
   const afterRestart = await loadRoleIdentityConfig(file);
@@ -50,6 +52,7 @@ test("AgentDevTeam Platform mapping v1 requires an explicit, unmixed project", a
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const file = path.join(root, "roles.json");
   const platformMappings = mappings(root, PLATFORM_PROJECT);
+  await createWorkspaceDirectories(platformMappings);
   await fs.writeFile(
     file,
     JSON.stringify({
@@ -90,6 +93,62 @@ test("AgentDevTeam Platform mapping v1 requires an explicit, unmixed project", a
     }),
   );
   await assert.rejects(loadRoleIdentityConfig(file), /mixed-project/);
+});
+
+test("equivalent role policy paths cannot be assigned to different roles", async (t) => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "role-policy-duplicate-"),
+  );
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "roles.json");
+  const roleMappings = mappings(root);
+  await createWorkspaceDirectories(roleMappings);
+  roleMappings[1].rolePolicyPath = "policies\\dev.md";
+  await fs.writeFile(
+    file,
+    JSON.stringify({ version: 1, mappings: roleMappings }),
+  );
+  await assert.rejects(loadRoleIdentityConfig(file), /duplicate mapping/);
+});
+
+test("workspace aliases and unresolved physical paths fail closed", async (t) => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "role-workspace-alias-"),
+  );
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, "roles.json");
+  const sharedWorkspace = path.join(root, "shared");
+  const aliasWorkspace = path.join(root, "review-alias");
+  await fs.mkdir(sharedWorkspace);
+  await fs.mkdir(path.join(root, "qa"));
+  await fs.symlink(sharedWorkspace, aliasWorkspace, "dir");
+  const roleMappings = mappings(root, PLATFORM_PROJECT);
+  roleMappings[0].workspace = sharedWorkspace;
+  roleMappings[1].workspace = aliasWorkspace;
+  roleMappings[2].workspace = path.join(root, "qa");
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      version: 1,
+      project: PLATFORM_PROJECT,
+      mappings: roleMappings,
+    }),
+  );
+  await assert.rejects(loadRoleIdentityConfig(file), /duplicate mapping/);
+
+  roleMappings[1].workspace = path.join(root, "missing-workspace");
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      version: 1,
+      project: PLATFORM_PROJECT,
+      mappings: roleMappings,
+    }),
+  );
+  await assert.rejects(
+    loadRoleIdentityConfig(file),
+    /ambiguous workspace path/,
+  );
 });
 
 test("Telegram role mapping v1 rejects Dev→QA Controller mapping v2", async (t) => {
@@ -227,15 +286,29 @@ test("AgentDevTeam Platform topic requires its explicit mapping and trusted work
   );
   fixture.chat.threadId = "";
   fixture.chat.forumBinding.cwd = path.join(fixture.root, "other-workspace");
+  fixture.options.setWorkingDirectory(
+    path.join(fixture.root, "other-workspace"),
+  );
   await assert.rejects(
     sync.beforeTurn(fixture.chatKey),
     /workspace does not match/,
   );
   fixture.chat.forumBinding.cwd = fixture.workspace;
+  fixture.options.setWorkingDirectory(fixture.workspace);
+  fixture.chat.threadId = "existing-thread";
   fixture.setRemoteProject(PROJECT);
   await assert.rejects(
     sync.beforeTurn(fixture.chatKey),
     /does not match its trusted mapping/,
+  );
+  fixture.setRemoteProject(PLATFORM_PROJECT);
+  fixture.chat.forumBinding.cwd = path.join(fixture.root, "other-workspace");
+  fixture.options.setWorkingDirectory(
+    path.join(fixture.root, "other-workspace"),
+  );
+  await assert.rejects(
+    sync.beforeTurn(fixture.chatKey),
+    /workspace does not match its trusted mapping/,
   );
 });
 
@@ -312,6 +385,7 @@ async function makeRepository(t, project = PROJECT) {
   );
   const roleMappings = mappings(root, project);
   roleMappings[0].workspace = workspace;
+  await createWorkspaceDirectories(roleMappings.slice(1));
   const mappingFile = path.join(root, "roles.json");
   await fs.writeFile(
     mappingFile,
@@ -323,6 +397,7 @@ async function makeRepository(t, project = PROJECT) {
     options: { workingDirectory: workspace },
   };
   let remoteProject = project;
+  let optionsWorkingDirectory = workspace;
   const realRun = async (...args) => {
     if (
       args[0] === "git" &&
@@ -343,12 +418,25 @@ async function makeRepository(t, project = PROJECT) {
     chatKey,
     chat,
     chats: { get: () => chat },
-    options: { get: () => ({ workingDirectory: workspace }) },
+    options: {
+      get: () => ({ workingDirectory: optionsWorkingDirectory }),
+      setWorkingDirectory(value) {
+        optionsWorkingDirectory = value;
+      },
+    },
     run: realRun,
     setRemoteProject(value) {
       remoteProject = value;
     },
   };
+}
+
+async function createWorkspaceDirectories(roleMappings) {
+  await Promise.all(
+    roleMappings.map((mapping) =>
+      fs.mkdir(mapping.workspace, { recursive: true }),
+    ),
+  );
 }
 
 async function git(cwd, ...args) {

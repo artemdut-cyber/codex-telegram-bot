@@ -49,13 +49,17 @@ export async function loadRoleIdentityConfig(filePath) {
   const seenTopics = new Set();
   const seenRoles = new Set();
   const seenWorkspaces = new Set();
-  const mappings = parsed.mappings.map((entry) => {
+  const seenRolePolicyPaths = new Set();
+  const mappings = [];
+  for (const entry of parsed.mappings) {
     const chatId = String(entry?.chatId || "");
     const topicId = String(entry?.topicId || "");
     const workspace = String(entry?.workspace || "");
     const entryProject = String(entry?.project || "");
     const roleId = String(entry?.roleId || "");
     const rolePolicyPath = String(entry?.rolePolicyPath || "");
+    const canonicalRolePolicyPath = canonicalRepoPath(rolePolicyPath);
+    const resolvedWorkspace = path.resolve(workspace);
     const key = `${chatId}:topic:${topicId}`;
     if (
       !/^-?\d+$/.test(chatId) ||
@@ -63,28 +67,43 @@ export async function loadRoleIdentityConfig(filePath) {
       !path.isAbsolute(workspace) ||
       entryProject !== selectedProject ||
       !ROLE_IDS.has(roleId) ||
-      !isRepoPath(rolePolicyPath) ||
+      !canonicalRolePolicyPath ||
       seenTopics.has(key) ||
       seenRoles.has(roleId) ||
-      seenWorkspaces.has(path.resolve(workspace))
+      seenRolePolicyPaths.has(canonicalRolePolicyPath)
     ) {
       throw new Error(
         "Role identity config contains an invalid, mixed-project or duplicate mapping.",
       );
     }
+    let physicalWorkspace;
+    try {
+      physicalWorkspace = await fs.realpath(resolvedWorkspace);
+      const workspaceStat = await fs.stat(physicalWorkspace);
+      if (!workspaceStat.isDirectory()) throw new Error("not a directory");
+    } catch {
+      throw new Error(
+        "Role identity config contains an invalid or ambiguous workspace path.",
+      );
+    }
+    if (seenWorkspaces.has(physicalWorkspace))
+      throw new Error(
+        "Role identity config contains an invalid, mixed-project or duplicate mapping.",
+      );
     seenTopics.add(key);
     seenRoles.add(roleId);
-    seenWorkspaces.add(path.resolve(workspace));
-    return {
+    seenWorkspaces.add(physicalWorkspace);
+    seenRolePolicyPaths.add(canonicalRolePolicyPath);
+    mappings.push({
       chatId,
       topicId,
-      workspace: path.resolve(workspace),
+      workspace: resolvedWorkspace,
       project: entryProject,
       roleId,
-      rolePolicyPath,
+      rolePolicyPath: canonicalRolePolicyPath,
       key,
-    };
-  });
+    });
+  }
   if (seenRoles.size !== 3)
     throw new Error(
       "Role identity config must map Dev, Review and QA once each.",
@@ -249,6 +268,10 @@ function isRepoPath(value) {
     !path.isAbsolute(value) &&
     value.split(/[\\/]/).every((part) => part && part !== "." && part !== "..")
   );
+}
+
+function canonicalRepoPath(value) {
+  return isRepoPath(value) ? value.replace(/\\/g, "/") : "";
 }
 
 function projectLabel(project) {
