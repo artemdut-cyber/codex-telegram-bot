@@ -32,6 +32,7 @@ import { createCodexMaintenanceController } from "./maintenance/runtime_controll
 import { createCodexUpdateController } from "./maintenance/update_controller.js";
 import { startUpdateIdleReporter, updateAdmissionPaused } from "./maintenance/update_state.js";
 import { createQueueRuntimeController } from "./queue/runtime_controller.js";
+import { findTrustedForumTopic } from "./forum/store.js";
 import {
   createRuntimeSettingsController,
   loadRuntimeState,
@@ -1111,6 +1112,8 @@ executionRuntime = createExecutionComposition({
   runtimeValue,
   saveState: () => saveState(config.stateFile, state),
   getChatState,
+  getTrustedForumTopic: (chatId, topicId) =>
+    findTrustedForumTopic(state, chatId, topicId, bot.botInfo?.id),
   getEffectiveOptions,
   defaultChatOptions,
   buildTurnOptions,

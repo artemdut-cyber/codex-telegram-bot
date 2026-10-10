@@ -14,7 +14,8 @@ export function createExecutionComposition(r) {
     ? createRoleIdentitySynchronizer({
         config: r.roleIdentityConfig,
         chats: { get: r.getChatState },
-        options: { get: r.getEffectiveOptions }
+        options: { get: r.getEffectiveOptions },
+        getTrustedForumTopic: r.getTrustedForumTopic,
       })
     : null;
   const journal = createTurnRecoveryJournal({

@@ -6,6 +6,10 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const EXPECTED_PROJECT = "artemdut-cyber/MyFkenTS";
+const ALLOWED_V2_PROJECTS = new Set([
+  "artemdut-cyber/MyFkenTS",
+  "artemdut-cyber/EmailAi",
+]);
 const ROLE_IDS = new Set(["dev", "review", "qa"]);
 const OVERRIDE_NAME = "AGENTS.override.md";
 const EXCLUDE_ENTRY = "/AGENTS.override.md";
@@ -29,6 +33,7 @@ export async function loadRoleIdentityConfig(filePath) {
   } catch {
     throw new Error("MyFkenTS role identity config is missing or invalid.");
   }
+  if (parsed?.version === 2) return loadV2Config(parsed);
   if (
     parsed?.version !== 1 ||
     !Array.isArray(parsed.mappings) ||
@@ -84,10 +89,110 @@ export async function loadRoleIdentityConfig(filePath) {
   return { mappings };
 }
 
+async function loadV2Config(parsed) {
+  if (!Array.isArray(parsed.projects) || parsed.projects.length < 2) {
+    throw new Error("Role identity v2 config must contain multiple projects.");
+  }
+  const seenTopics = new Set();
+  const seenWorkspaces = new Set();
+  const seenRepositories = new Set();
+  const projects = [];
+  const mappings = [];
+  for (const entry of parsed.projects) {
+    const repository = String(entry?.repository || "");
+    const acceptedGovernanceSha = String(entry?.acceptedGovernanceSha || "");
+    if (
+      !ALLOWED_V2_PROJECTS.has(repository) ||
+      seenRepositories.has(repository) ||
+      !/^[0-9a-f]{40}$/.test(acceptedGovernanceSha) ||
+      !Array.isArray(entry?.mappings) ||
+      entry.mappings.length !== ROLE_IDS.size
+    ) {
+      throw new Error(
+        "Role identity v2 config contains an unknown or invalid project.",
+      );
+    }
+    seenRepositories.add(repository);
+    const projectMappings = [];
+    const seenRoles = new Set();
+    for (const mappingEntry of entry.mappings) {
+      const chatId = String(mappingEntry?.chatId || "");
+      const topicId = String(mappingEntry?.topicId || "");
+      const workspace = String(mappingEntry?.workspace || "");
+      const roleId = String(mappingEntry?.roleId || "");
+      const rolePolicyPath = String(mappingEntry?.rolePolicyPath || "");
+      const key = `${chatId}:topic:${topicId}`;
+      if (
+        !/^-?\d+$/.test(chatId) ||
+        !/^\d+$/.test(topicId) ||
+        !path.isAbsolute(workspace) ||
+        !ROLE_IDS.has(roleId) ||
+        !isV2RepoPath(rolePolicyPath) ||
+        path.posix.basename(rolePolicyPath) !== `${roleId}.md` ||
+        seenTopics.has(key) ||
+        seenRoles.has(roleId)
+      ) {
+        throw new Error(
+          "Role identity v2 config contains an invalid or duplicate mapping.",
+        );
+      }
+      const resolvedWorkspace = path.resolve(workspace);
+      let canonicalWorkspace;
+      try {
+        const stat = await fs.lstat(resolvedWorkspace);
+        canonicalWorkspace = await fs.realpath(resolvedWorkspace);
+        if (
+          !stat.isDirectory() ||
+          stat.isSymbolicLink() ||
+          canonicalWorkspace !== resolvedWorkspace
+        ) {
+          throw new Error("workspace is not canonical");
+        }
+      } catch {
+        throw new Error(
+          "Role identity v2 workspace is missing, unsafe or not canonical.",
+        );
+      }
+      if (seenWorkspaces.has(canonicalWorkspace)) {
+        throw new Error(
+          "Role identity v2 config contains duplicate physical workspaces.",
+        );
+      }
+      seenTopics.add(key);
+      seenRoles.add(roleId);
+      seenWorkspaces.add(canonicalWorkspace);
+      const mapping = {
+        chatId,
+        topicId,
+        workspace: canonicalWorkspace,
+        project: repository,
+        roleId,
+        rolePolicyPath,
+        acceptedGovernanceSha,
+        key,
+      };
+      projectMappings.push(mapping);
+      mappings.push(mapping);
+    }
+    if (seenRoles.size !== ROLE_IDS.size) {
+      throw new Error(
+        "Role identity v2 project must map Dev, Review and QA once each.",
+      );
+    }
+    projects.push({
+      repository,
+      acceptedGovernanceSha,
+      mappings: projectMappings,
+    });
+  }
+  return { version: 2, projects, mappings };
+}
+
 export function createRoleIdentitySynchronizer({
   config,
   chats,
   options,
+  getTrustedForumTopic,
   run = execFileAsync,
 }) {
   if (!config?.mappings)
@@ -102,6 +207,9 @@ export function createRoleIdentitySynchronizer({
         )
       : null;
     const cwd = chat?.forumBinding?.cwd;
+    if (config.version === 2) {
+      return beforeTurnV2({ chatKey, identity, chat, cwd, forceNewSession });
+    }
     if (!cwd) {
       if (mapping)
         throw new Error(
@@ -207,6 +315,205 @@ export function createRoleIdentitySynchronizer({
     };
   }
 
+  async function beforeTurnV2({
+    chatKey,
+    identity,
+    chat,
+    cwd,
+    forceNewSession,
+  }) {
+    const mapping = identity
+      ? config.mappings.find(
+          (item) => item.key === `${identity.chatId}:topic:${identity.topicId}`,
+        )
+      : null;
+    if (!cwd) {
+      if (mapping)
+        throw new Error(
+          "Role identity v2 trusted topic has no bound workspace.",
+        );
+      return { synchronized: false, reason: "not-project-topic" };
+    }
+    if (!identity)
+      throw new Error("Role identity v2 requires a registered Telegram topic.");
+    if (!mapping) {
+      const repo = await originRepositoryV2(cwd, run);
+      if (config.projects.some((project) => project.repository === repo)) {
+        throw new Error(
+          "Unknown managed project topic; refusing to start Codex.",
+        );
+      }
+      return { synchronized: false, reason: "not-managed-project" };
+    }
+    if (typeof getTrustedForumTopic !== "function") {
+      throw new Error(
+        "Role identity v2 requires a trusted forum topic resolver.",
+      );
+    }
+    const topic = getTrustedForumTopic(identity.chatId, identity.topicId);
+    if (
+      !topic ||
+      String(topic.id) !== identity.topicId ||
+      topic.role !== "project" ||
+      topic.stale === true ||
+      topic.closed === true ||
+      !topic.bindingId ||
+      !topic.cwd
+    ) {
+      throw new Error(
+        "Role identity v2 Telegram topic is missing, stale, closed or untrusted.",
+      );
+    }
+    const forumBinding = chat?.forumBinding;
+    if (
+      !forumBinding ||
+      forumBinding.id !== topic.bindingId ||
+      forumBinding.cwd !== topic.cwd
+    ) {
+      throw new Error(
+        "Role identity v2 Telegram topic binding is stale or changed.",
+      );
+    }
+    const expectedBindingId = topic.bindingId;
+    const expectedTopicWorkspace = topic.cwd;
+    const assertCurrentTopicBinding = () => {
+      const current = getTrustedForumTopic(identity.chatId, identity.topicId);
+      if (
+        !current ||
+        String(current.id) !== identity.topicId ||
+        current.role !== "project" ||
+        current.stale === true ||
+        current.closed === true ||
+        current.bindingId !== expectedBindingId ||
+        current.cwd !== expectedTopicWorkspace ||
+        chat?.forumBinding?.id !== expectedBindingId ||
+        chat?.forumBinding?.cwd !== expectedTopicWorkspace
+      ) {
+        throw new Error(
+          "Role identity v2 Telegram topic binding became stale or changed.",
+        );
+      }
+    };
+    if (path.resolve(topic.cwd) !== mapping.workspace) {
+      throw new Error(
+        "Role identity v2 topic workspace does not match its trusted mapping.",
+      );
+    }
+    const effectiveCwd = options.get(chatKey).workingDirectory;
+    if (
+      effectiveCwd !== cwd ||
+      cwd !== topic.cwd ||
+      path.resolve(cwd) !== mapping.workspace
+    ) {
+      throw new Error(
+        "Role identity v2 workspace does not match its trusted topic binding.",
+      );
+    }
+    const assertCurrentEffectiveWorkspace = () => {
+      if (options.get(chatKey)?.workingDirectory !== mapping.workspace) {
+        throw new Error(
+          "Role identity v2 effective workspace changed during synchronization.",
+        );
+      }
+    };
+    const actualWorkspace = await fs.realpath(cwd).catch(() => "");
+    if (!actualWorkspace || actualWorkspace !== mapping.workspace) {
+      throw new Error("Role identity v2 workspace is missing or ambiguous.");
+    }
+    assertCurrentEffectiveWorkspace();
+    const repo = await originRepositoryV2(cwd, run);
+    if (repo !== mapping.project) {
+      throw new Error(
+        "Role identity v2 repository does not match its trusted topic binding.",
+      );
+    }
+    assertCurrentTopicBinding();
+    assertCurrentEffectiveWorkspace();
+    const threadId =
+      chat?.threadId ||
+      chat?.accountThreads?.[
+        chat?.threadAccountId || chat?.accountId || "default"
+      ] ||
+      "";
+    if (threadId && !forceNewSession)
+      return { synchronized: false, reason: "existing-session" };
+
+    await ensureExcluded(cwd, run);
+    const statusBefore = await git(
+      cwd,
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      run,
+    );
+    await git(cwd, ["fetch", "--no-tags", "origin", "refs/heads/main"], run);
+    const fetchedSha = await git(
+      cwd,
+      ["rev-parse", "FETCH_HEAD^{commit}"],
+      run,
+    );
+    if (fetchedSha !== mapping.acceptedGovernanceSha) {
+      throw new Error(
+        "Role identity v2 accepted governance SHA does not match origin/main.",
+      );
+    }
+    await assertRegularGitFile(
+      cwd,
+      mapping.acceptedGovernanceSha,
+      "AGENTS.md",
+      run,
+    );
+    await assertRegularGitFile(
+      cwd,
+      mapping.acceptedGovernanceSha,
+      mapping.rolePolicyPath,
+      run,
+    );
+    const common = await git(
+      cwd,
+      ["show", `${mapping.acceptedGovernanceSha}:AGENTS.md`],
+      run,
+    );
+    const policy = await git(
+      cwd,
+      ["show", `${mapping.acceptedGovernanceSha}:${mapping.rolePolicyPath}`],
+      run,
+    );
+    assertCurrentTopicBinding();
+    assertCurrentEffectiveWorkspace();
+    const content = composeInstructions({
+      common,
+      policy,
+      governanceSha: mapping.acceptedGovernanceSha,
+      roleId: mapping.roleId,
+    });
+    await atomicWrite(path.join(actualWorkspace, OVERRIDE_NAME), content);
+    const ignored = await run(
+      "git",
+      ["check-ignore", "--quiet", "--", OVERRIDE_NAME],
+      { cwd },
+    ).then(
+      () => true,
+      () => false,
+    );
+    if (!ignored)
+      throw new Error("Role identity v2 override is not excluded from Git.");
+    const statusAfter = await git(
+      cwd,
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      run,
+    );
+    if (statusBefore !== statusAfter)
+      throw new Error("Role identity v2 sync changed the worktree Git status.");
+    assertCurrentTopicBinding();
+    assertCurrentEffectiveWorkspace();
+    return {
+      synchronized: true,
+      project: mapping.project,
+      roleId: mapping.roleId,
+      governanceSha: mapping.acceptedGovernanceSha,
+      overrideSha256: crypto.createHash("sha256").update(content).digest("hex"),
+    };
+  }
+
   return { beforeTurn };
 }
 
@@ -237,10 +544,61 @@ function isRepoPath(value) {
   );
 }
 
+function isV2RepoPath(value) {
+  return (
+    value &&
+    !path.posix.isAbsolute(value) &&
+    !value.includes("\\") &&
+    value
+      .split("/")
+      .every(
+        (part) =>
+          /^[A-Za-z0-9_.-]+$/.test(part) &&
+          part !== "." &&
+          part !== ".." &&
+          part !== ".git",
+      )
+  );
+}
+
 async function originRepository(cwd, run) {
   const remote = await git(cwd, ["remote", "get-url", "origin"], run);
   const match = remote.match(/(?:github\.com[:/])([^/]+\/[^/]+?)(?:\.git)?$/i);
   return match?.[1] || "";
+}
+
+async function originRepositoryV2(cwd, run) {
+  const remote = await git(cwd, ["remote", "get-url", "origin"], run);
+  let repositoryPath;
+  if (/^(https|ssh):\/\//i.test(remote)) {
+    try {
+      const url = new URL(remote);
+      const authority = remote.match(/^[A-Za-z]+:\/\/([^/]+)/)?.[1] || "";
+      if (
+        url.hostname.toLowerCase() !== "github.com" ||
+        url.password ||
+        url.port ||
+        url.search ||
+        url.hash ||
+        (url.protocol === "https:" &&
+          authority.toLowerCase() !== "github.com") ||
+        (url.protocol === "ssh:" &&
+          authority.toLowerCase() !== "git@github.com")
+      )
+        return "";
+      if (url.protocol === "https:" && url.username) return "";
+      if (url.protocol === "ssh:" && url.username !== "git") return "";
+      repositoryPath = url.pathname.slice(1);
+    } catch {
+      return "";
+    }
+  } else {
+    repositoryPath = remote.match(/^git@github\.com:([^\s?#]+)$/i)?.[1] || "";
+  }
+  repositoryPath = repositoryPath.replace(/\.git$/i, "");
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repositoryPath)
+    ? repositoryPath
+    : "";
 }
 
 async function git(cwd, args, run) {
@@ -250,6 +608,20 @@ async function git(cwd, args, run) {
   } catch {
     throw new Error(
       "MyFkenTS role identity sync could not verify the trusted repository state.",
+    );
+  }
+}
+
+async function assertRegularGitFile(cwd, revision, filePath, run) {
+  const output = await git(
+    cwd,
+    ["ls-tree", "--full-tree", revision, "--", filePath],
+    run,
+  );
+  const match = output.match(/^(100644|100755) blob [0-9a-f]{40,64}\t.+$/);
+  if (!match) {
+    throw new Error(
+      "Role identity v2 governance instructions must be regular files.",
     );
   }
 }
