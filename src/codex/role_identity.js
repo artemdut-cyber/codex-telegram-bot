@@ -355,6 +355,7 @@ export function createRoleIdentitySynchronizer({
       !topic ||
       String(topic.id) !== identity.topicId ||
       topic.role !== "project" ||
+      topic.stale === true ||
       topic.closed === true ||
       !topic.bindingId ||
       !topic.cwd
@@ -381,6 +382,7 @@ export function createRoleIdentitySynchronizer({
         !current ||
         String(current.id) !== identity.topicId ||
         current.role !== "project" ||
+        current.stale === true ||
         current.closed === true ||
         current.bindingId !== expectedBindingId ||
         current.cwd !== expectedTopicWorkspace ||
@@ -407,10 +409,18 @@ export function createRoleIdentitySynchronizer({
         "Role identity v2 workspace does not match its trusted topic binding.",
       );
     }
+    const assertCurrentEffectiveWorkspace = () => {
+      if (options.get(chatKey)?.workingDirectory !== mapping.workspace) {
+        throw new Error(
+          "Role identity v2 effective workspace changed during synchronization.",
+        );
+      }
+    };
     const actualWorkspace = await fs.realpath(cwd).catch(() => "");
     if (!actualWorkspace || actualWorkspace !== mapping.workspace) {
       throw new Error("Role identity v2 workspace is missing or ambiguous.");
     }
+    assertCurrentEffectiveWorkspace();
     const repo = await originRepositoryV2(cwd, run);
     if (repo !== mapping.project) {
       throw new Error(
@@ -418,6 +428,7 @@ export function createRoleIdentitySynchronizer({
       );
     }
     assertCurrentTopicBinding();
+    assertCurrentEffectiveWorkspace();
     const threadId =
       chat?.threadId ||
       chat?.accountThreads?.[
@@ -467,6 +478,7 @@ export function createRoleIdentitySynchronizer({
       run,
     );
     assertCurrentTopicBinding();
+    assertCurrentEffectiveWorkspace();
     const content = composeInstructions({
       common,
       policy,
@@ -492,6 +504,7 @@ export function createRoleIdentitySynchronizer({
     if (statusBefore !== statusAfter)
       throw new Error("Role identity v2 sync changed the worktree Git status.");
     assertCurrentTopicBinding();
+    assertCurrentEffectiveWorkspace();
     return {
       synchronized: true,
       project: mapping.project,

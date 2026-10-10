@@ -414,12 +414,60 @@ test("v2 rejects missing, stale, changed and closed trusted topic bindings befor
     /missing, stale, closed or untrusted/,
   );
   topic.closed = false;
+
+  topic.stale = true;
+  await assert.rejects(
+    sync.beforeTurn(mapping.key),
+    /missing, stale, closed or untrusted/,
+  );
+  topic.stale = false;
+
+  fixture.staleTopicOnOrigin = true;
+  await assert.rejects(
+    sync.beforeTurn(mapping.key),
+    /binding became stale or changed/,
+  );
+  topic.stale = false;
+
   fixture.changeBindingOnOrigin = true;
   await assert.rejects(
     sync.beforeTurn(mapping.key),
     /binding became stale or changed/,
   );
   assert.equal(fixture.instructionReads, 0);
+});
+
+test("v2 rechecks the effective workspace after Git awaits and before either success path", async (t) => {
+  const fixture = await makeV2Fixture(t);
+  const config = await loadRoleIdentityConfig(fixture.mappingFile);
+  const mapping = config.mappings[0];
+  const sync = createRoleIdentitySynchronizer({
+    config,
+    chats: fixture.chats,
+    options: fixture.options,
+    getTrustedForumTopic: fixture.getTrustedForumTopic,
+    run: fixture.run,
+  });
+
+  fixture.holdOrigin = true;
+  const existingChat = fixture.chatMap.get(mapping.key);
+  existingChat.threadId = "existing-session";
+  const existingTurn = sync.beforeTurn(mapping.key);
+  await fixture.originStarted;
+  fixture.effectiveWorkspaces.set(mapping.key, config.mappings[3].workspace);
+  fixture.releaseOrigin();
+  await assert.rejects(
+    existingTurn,
+    /effective workspace changed during synchronization/,
+  );
+
+  fixture.effectiveWorkspaces.set(mapping.key, mapping.workspace);
+  existingChat.threadId = "";
+  fixture.changeWorkspaceOnFinalStatus = true;
+  await assert.rejects(
+    sync.beforeTurn(mapping.key),
+    /effective workspace changed during synchronization/,
+  );
 });
 
 test("v2 fails closed when accepted governance files are absent, symlinked or unreadable", async (t) => {
@@ -603,6 +651,7 @@ async function makeV2Fixture(t) {
         role: "project",
         cwd: mapping.workspace,
         bindingId,
+        stale: false,
         closed: false,
       };
       chatMap.set(key, {
@@ -620,7 +669,19 @@ async function makeV2Fixture(t) {
   let symlinkTreeFile = "";
   let instructionReadFailure = false;
   let changeBindingOnOrigin = false;
+  let staleTopicOnOrigin = false;
+  let holdOrigin = false;
+  let releaseOrigin;
+  let signalOriginStarted;
+  const originStarted = new Promise((resolve) => {
+    signalOriginStarted = resolve;
+  });
+  let changeWorkspaceOnFinalStatus = false;
+  let statusCalls = 0;
   let instructionReads = 0;
+  const effectiveWorkspaces = new Map(
+    [...chatMap].map(([key, chat]) => [key, chat.forumBinding.cwd]),
+  );
   const run = async (command, args, options) => {
     const cwd = options?.cwd || "";
     const mapping = document.projects
@@ -633,11 +694,23 @@ async function makeV2Fixture(t) {
       .find((item) => item.workspace === cwd);
     if (command !== "git") throw new Error(`Unexpected command: ${command}`);
     if (args[0] === "remote" && args[1] === "get-url") {
+      if (holdOrigin) {
+        signalOriginStarted();
+        await new Promise((resolve) => {
+          releaseOrigin = resolve;
+        });
+        holdOrigin = false;
+      }
       if (changeBindingOnOrigin && mapping) {
         trustedTopics.get(
           `${mapping.chatId}:topic:${mapping.topicId}`,
         ).bindingId = "changed-during-origin-check";
         changeBindingOnOrigin = false;
+      }
+      if (staleTopicOnOrigin && mapping) {
+        trustedTopics.get(`${mapping.chatId}:topic:${mapping.topicId}`).stale =
+          true;
+        staleTopicOnOrigin = false;
       }
       return {
         stdout:
@@ -655,7 +728,17 @@ async function makeV2Fixture(t) {
     if (args[0] === "rev-parse" && args[1] === "--git-path") {
       return { stdout: path.join(cwd, ".git", "info", "exclude"), stderr: "" };
     }
-    if (args[0] === "status") return { stdout: "", stderr: "" };
+    if (args[0] === "status") {
+      statusCalls++;
+      if (changeWorkspaceOnFinalStatus && statusCalls === 2) {
+        effectiveWorkspaces.set(
+          `${mapping.chatId}:topic:${mapping.topicId}`,
+          document.projects[1].mappings[0].workspace,
+        );
+        changeWorkspaceOnFinalStatus = false;
+      }
+      return { stdout: "", stderr: "" };
+    }
     if (args[0] === "fetch") return { stdout: "", stderr: "" };
     if (args[0] === "rev-parse" && args[1] === "FETCH_HEAD^{commit}") {
       return { stdout: wrongSha ? "b".repeat(40) : ACCEPTED_SHA, stderr: "" };
@@ -699,7 +782,7 @@ async function makeV2Fixture(t) {
     chats: { get: (chatKey) => chatMap.get(chatKey) },
     options: {
       get: (chatKey) => ({
-        workingDirectory: chatMap.get(chatKey)?.forumBinding.cwd,
+        workingDirectory: effectiveWorkspaces.get(chatKey),
       }),
     },
     run,
@@ -707,6 +790,28 @@ async function makeV2Fixture(t) {
     getTrustedForumTopic: (chatId, topicId) =>
       trustedTopics.get(`${chatId}:topic:${topicId}`) || null,
     trustedTopics,
+    effectiveWorkspaces,
+    originStarted,
+    releaseOrigin: () => releaseOrigin?.(),
+    get holdOrigin() {
+      return holdOrigin;
+    },
+    set holdOrigin(value) {
+      holdOrigin = value;
+    },
+    get staleTopicOnOrigin() {
+      return staleTopicOnOrigin;
+    },
+    set staleTopicOnOrigin(value) {
+      staleTopicOnOrigin = value;
+    },
+    get changeWorkspaceOnFinalStatus() {
+      return changeWorkspaceOnFinalStatus;
+    },
+    set changeWorkspaceOnFinalStatus(value) {
+      changeWorkspaceOnFinalStatus = value;
+      statusCalls = 0;
+    },
     get wrongOrigin() {
       return wrongOrigin;
     },
