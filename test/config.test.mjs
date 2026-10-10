@@ -39,6 +39,10 @@ test("readConfig preserves the complete flat default contract", () => {
     codexWorkerStateDir: "/app/state/worker",
     codexWorkerLogRetentionDays: 30,
     codexWorkerSocket: "/app/state/worker/worker.sock",
+    codexSlackJobSocket: "",
+    codexSlackJobUid: null,
+    codexSlackJobGid: null,
+    codexSlackJobWorkspace: "",
     codexWorkerConnectTimeoutMs: 5000,
     codexWorkerEventPollMs: 1000,
     codexModel: "",
@@ -147,6 +151,32 @@ test("role identity config path is opt-in and machine-local", () => {
     }).codexRoleIdentityConfigFile,
     "/srv/codex/config/myfkents-roles.json",
   );
+});
+
+test("Slack job socket config is disabled by default and pins the reviewed runtime inputs", () => {
+  const disabled = readTestConfig();
+  assert.equal(disabled.codexSlackJobSocket, "");
+  assert.equal(disabled.codexSlackJobUid, null);
+  assert.equal(disabled.codexSlackJobGid, null);
+  assert.equal(disabled.codexSlackJobWorkspace, "");
+  const enabled = readTestConfig({
+    CODEX_SLACK_JOB_SOCKET: "/run/adtplat/codexhub-slack-job-v1.sock",
+    CODEX_SLACK_JOB_UID: "979",
+    CODEX_SLACK_JOB_GID: "1201",
+    CODEX_SLACK_JOB_WORKSPACE: "/srv/projects/agentdevteam-platform"
+  });
+  assert.equal(enabled.codexSlackJobSocket, "/run/adtplat/codexhub-slack-job-v1.sock");
+  assert.equal(enabled.codexSlackJobUid, 979);
+  assert.equal(enabled.codexSlackJobGid, 1201);
+  assert.equal(enabled.codexSlackJobWorkspace, "/srv/projects/agentdevteam-platform");
+  assert.throws(() => readTestConfig({ CODEX_SLACK_JOB_SOCKET: "/tmp/worker.sock" }), /reviewed CODEX_HUB Slack job socket path/);
+  assert.throws(() => readTestConfig({ CODEX_SLACK_JOB_UID: "979" }), /require CODEX_SLACK_JOB_SOCKET/);
+  assert.throws(() => readTestConfig({
+    CODEX_SLACK_JOB_SOCKET: "/run/adtplat/codexhub-slack-job-v1.sock",
+    CODEX_SLACK_JOB_UID: "0",
+    CODEX_SLACK_JOB_GID: "1201",
+    CODEX_SLACK_JOB_WORKSPACE: "/srv/projects/agentdevteam-platform"
+  }), /positive integer/);
 });
 
 test("readConfig applies stable defaults from env and options", () => {

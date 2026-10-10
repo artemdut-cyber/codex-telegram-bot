@@ -38,6 +38,22 @@ function readCodexSelections(env) {
 
 function readCodexRuntimeConfig(env, paths, selections) {
   const workerStateDir = env.CODEX_WORKER_STATE_DIR?.trim() || path.join(paths.stateRoot, "worker");
+  const slackJobSocket = env.CODEX_SLACK_JOB_SOCKET?.trim() || "";
+  const slackJobUid = parseOptionalUnixId(env.CODEX_SLACK_JOB_UID, "CODEX_SLACK_JOB_UID");
+  const slackJobGid = parseOptionalUnixId(env.CODEX_SLACK_JOB_GID, "CODEX_SLACK_JOB_GID");
+  const slackJobWorkspace = env.CODEX_SLACK_JOB_WORKSPACE?.trim() || "";
+  if (slackJobSocket && slackJobSocket !== "/run/adtplat/codexhub-slack-job-v1.sock") {
+    throw new Error("CODEX_SLACK_JOB_SOCKET must use the reviewed CODEX_HUB Slack job socket path.");
+  }
+  if (slackJobSocket && slackJobSocket === (env.CODEX_WORKER_SOCKET?.trim() || path.join(workerStateDir, "worker.sock"))) {
+    throw new Error("CODEX_SLACK_JOB_SOCKET must remain separate from the private Telegram worker socket.");
+  }
+  if (slackJobSocket && (!slackJobUid || !slackJobGid || !path.isAbsolute(slackJobWorkspace))) {
+    throw new Error("CODEX_SLACK_JOB_SOCKET requires a non-root Slack UID, socket GID, and absolute Developer workspace.");
+  }
+  if (!slackJobSocket && (slackJobUid !== null || slackJobGid !== null || slackJobWorkspace)) {
+    throw new Error("CODEX_SLACK_JOB_UID, CODEX_SLACK_JOB_GID, and CODEX_SLACK_JOB_WORKSPACE require CODEX_SLACK_JOB_SOCKET.");
+  }
   return {
     codexWorkdir: env.CODEX_WORKDIR?.trim() || paths.homeDir,
     codexPath: env.CODEX_PATH?.trim() || "codex",
@@ -53,6 +69,10 @@ function readCodexRuntimeConfig(env, paths, selections) {
       env.CODEX_WORKER_LOG_RETENTION_DAYS, 30, "CODEX_WORKER_LOG_RETENTION_DAYS"
     ),
     codexWorkerSocket: env.CODEX_WORKER_SOCKET?.trim() || path.join(workerStateDir, "worker.sock"),
+    codexSlackJobSocket: slackJobSocket,
+    codexSlackJobUid: slackJobUid,
+    codexSlackJobGid: slackJobGid,
+    codexSlackJobWorkspace: slackJobWorkspace,
     codexWorkerConnectTimeoutMs: parseNonnegativeInteger(
       env.CODEX_WORKER_CONNECT_TIMEOUT_MS,
       5000,
@@ -64,6 +84,15 @@ function readCodexRuntimeConfig(env, paths, selections) {
       "CODEX_WORKER_EVENT_POLL_MS"
     )
   };
+}
+
+function parseOptionalUnixId(value, name) {
+  if (value === undefined || value === "") return null;
+  const text = String(value).trim();
+  if (!/^[1-9][0-9]*$/.test(text)) throw new Error(`${name} must be a positive integer.`);
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`${name} must be a safe integer.`);
+  return parsed;
 }
 
 function readCodexModelConfig(env, selections) {

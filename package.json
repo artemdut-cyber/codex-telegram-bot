@@ -55,7 +55,7 @@
     "typecheck": "node node_modules/typescript/bin/tsc --noEmit",
     "check:architecture": "node scripts/check-architecture.mjs",
     "test:coverage": "node scripts/collect-coverage.mjs",
-    "format:source": "prettier --check src/workspace/*_controller.js src/workspace/controller.js src/workspace/capabilities.js src/workspace/contracts.d.ts src/workspace/presentation.js src/state/schema.js src/ui/menu_definition.js src/i18n/validation.js scripts/check-architecture.mjs scripts/collect-coverage.mjs scripts/coverage-summary.mjs scripts/repository-sync.mjs test/state_migration.test.mjs test/architecture.test.mjs test/coverage_summary.test.mjs test/repository_sync.test.mjs tsconfig.json src/worker/event_log.js src/worker/log_retention.js src/utils/query_cache.js src/accounts/query_identity.js scripts/worker-log-maintenance.mjs scripts/benchmark-runtime.mjs test/bootstrap_polling.test.mjs test/query_cache.test.mjs test/worker_event_log.test.mjs test/worker_log_retention.test.mjs",
+    "format:source": "prettier --check src/workspace/*_controller.js src/workspace/controller.js src/workspace/capabilities.js src/workspace/contracts.d.ts src/workspace/presentation.js src/state/schema.js src/ui/menu_definition.js src/i18n/validation.js scripts/check-architecture.mjs scripts/collect-coverage.mjs scripts/coverage-summary.mjs scripts/repository-sync.mjs test/state_migration.test.mjs test/architecture.test.mjs test/coverage_summary.test.mjs test/repository_sync.test.mjs tsconfig.json src/worker/event_log.js src/worker/log_retention.js src/utils/query_cache.js src/accounts/query_identity.js scripts/worker-log-maintenance.mjs scripts/benchmark-runtime.mjs test/bootstrap_polling.test.mjs test/query_cache.test.mjs test/worker_event_log.test.mjs test/worker_log_retention.test.mjs src/worker/slack_job_security.js test/worker_slack_job_socket.test.mjs",
     "worker:logs": "node scripts/worker-log-maintenance.mjs",
     "benchmark:runtime": "node scripts/benchmark-runtime.mjs",
     "check:ui-localization": "node scripts/check-ui-localization.mjs"
@@ -79,5 +79,8 @@
   "overrides": {
     "brace-expansion": "5.0.12",
     "basic-ftp": "6.2.1"
+  },
+  "optionalDependencies": {
+    "peercred": "1.1.2"
   }
 }
