@@ -15,7 +15,7 @@ export function createExecutionComposition(r) {
         config: r.roleIdentityConfig,
         chats: { get: r.getChatState },
         options: { get: r.getEffectiveOptions },
-        getTrustedForumTopic: r.getTrustedForumTopic
+        getTrustedForumTopic: r.getTrustedForumTopic,
       })
     : null;
   const journal = createTurnRecoveryJournal({

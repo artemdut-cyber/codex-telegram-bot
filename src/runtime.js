@@ -1112,7 +1112,8 @@ executionRuntime = createExecutionComposition({
   runtimeValue,
   saveState: () => saveState(config.stateFile, state),
   getChatState,
-  getTrustedForumTopic: (chatId, topicId) => findTrustedForumTopic(state, chatId, topicId, bot.botInfo?.id),
+  getTrustedForumTopic: (chatId, topicId) =>
+    findTrustedForumTopic(state, chatId, topicId, bot.botInfo?.id),
   getEffectiveOptions,
   defaultChatOptions,
   buildTurnOptions,

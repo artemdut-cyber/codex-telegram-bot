@@ -28,7 +28,12 @@ export function forumGroup(state, ctx, botId) {
 export function findTrustedForumTopic(state, chatId, topicId, botId) {
   if (chatId == null || topicId == null || botId == null) return null;
   const group = state.forum?.groups?.[String(chatId)];
-  if (!group || String(group.chatId) !== String(chatId) || String(group.botId) !== String(botId)) return null;
+  if (
+    !group ||
+    String(group.chatId) !== String(chatId) ||
+    String(group.botId) !== String(botId)
+  )
+    return null;
   const topic = group.topics?.[String(topicId)];
   return topic && String(topic.id) === String(topicId) ? topic : null;
 }
