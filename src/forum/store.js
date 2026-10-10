@@ -25,6 +25,13 @@ export function forumGroup(state, ctx, botId) {
   const group = state.forum?.groups[String(ctx.chat?.id)];
   return group?.botId === botId && forumChatType(group) === ctx.chat?.type ? group : null;
 }
+export function findTrustedForumTopic(state, chatId, topicId, botId) {
+  if (chatId == null || topicId == null || botId == null) return null;
+  const group = state.forum?.groups?.[String(chatId)];
+  if (!group || String(group.chatId) !== String(chatId) || String(group.botId) !== String(botId)) return null;
+  const topic = group.topics?.[String(topicId)];
+  return topic && String(topic.id) === String(topicId) ? topic : null;
+}
 export function forumTopicUrl(group, topicId, messageId = topicId) {
   if (forumChatType(group) === "private") return null;
   const match = String(group.chatId).match(/^-100(\d+)$/);

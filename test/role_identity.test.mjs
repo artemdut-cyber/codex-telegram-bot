@@ -10,11 +10,37 @@ import {
   createRoleIdentitySynchronizer,
   loadRoleIdentityConfig,
 } from "../src/codex/role_identity.js";
+import { findTrustedForumTopic } from "../src/forum/store.js";
 
 const execFile = promisify(execFileCallback);
 const PROJECT = "artemdut-cyber/MyFkenTS";
 const EMAIL_PROJECT = "artemdut-cyber/EmailAi";
 const ACCEPTED_SHA = "a".repeat(40);
+
+test("trusted forum topic lookup requires the exact chat, topic and bot records", () => {
+  const topic = {
+    id: 201,
+    bindingId: "binding",
+    cwd: "/workspace",
+    role: "project",
+  };
+  const state = {
+    forum: {
+      groups: {
+        "-100123": {
+          chatId: "-100123",
+          botId: 77,
+          topics: { 201: topic },
+        },
+      },
+    },
+  };
+  assert.equal(findTrustedForumTopic(state, "-100123", "201", 77), topic);
+  assert.equal(findTrustedForumTopic(state, "-100123", "202", 77), null);
+  assert.equal(findTrustedForumTopic(state, "-100124", "201", 77), null);
+  assert.equal(findTrustedForumTopic(state, "-100123", "201", 78), null);
+  assert.equal(findTrustedForumTopic(state, "-100123", "202", undefined), null);
+});
 
 test("role mapping is explicit, complete, unique and restart-persistent", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "role-map-"));
@@ -186,6 +212,7 @@ test("v2 loads MyFkenTS and EmailAi together and resolves every trusted role bin
     config,
     chats: fixture.chats,
     options: fixture.options,
+    getTrustedForumTopic: fixture.getTrustedForumTopic,
     run: fixture.run,
   });
   for (const mapping of config.mappings) {
@@ -292,6 +319,7 @@ test("v2 checks origin and accepted governance SHA before reading trusted instru
     config,
     chats: fixture.chats,
     options: fixture.options,
+    getTrustedForumTopic: fixture.getTrustedForumTopic,
     run: fixture.run,
   });
   fixture.wrongOrigin = true;
@@ -308,6 +336,133 @@ test("v2 checks origin and accepted governance SHA before reading trusted instru
   assert.equal(fixture.instructionReads, 0);
 });
 
+test("v2 accepts canonical HTTPS, SCP-style SSH and ssh:// GitHub origins only", async (t) => {
+  const fixture = await makeV2Fixture(t);
+  const config = await loadRoleIdentityConfig(fixture.mappingFile);
+  const mapping = config.mappings[0];
+  fixture.chatMap.get(mapping.key).threadId = "already-running";
+  const sync = createRoleIdentitySynchronizer({
+    config,
+    chats: fixture.chats,
+    options: fixture.options,
+    getTrustedForumTopic: fixture.getTrustedForumTopic,
+    run: fixture.run,
+  });
+  for (const format of ["https", "scp", "ssh"]) {
+    fixture.originFormat = format;
+    assert.deepEqual(await sync.beforeTurn(mapping.key), {
+      synchronized: false,
+      reason: "existing-session",
+    });
+  }
+  for (const remote of [
+    "https://github.com.evil/artemdut-cyber/MyFkenTS.git",
+    "https://user@github.com/artemdut-cyber/MyFkenTS.git",
+    "https://github.com:443/artemdut-cyber/MyFkenTS.git",
+    "ssh://other@github.com/artemdut-cyber/MyFkenTS.git",
+    "git@github.com:artemdut-cyber/MyFkenTS/extra.git",
+  ]) {
+    fixture.originOverride = remote;
+    await assert.rejects(
+      sync.beforeTurn(mapping.key),
+      /repository does not match/,
+    );
+  }
+});
+
+test("v2 rejects missing, stale, changed and closed trusted topic bindings before existing sessions", async (t) => {
+  const fixture = await makeV2Fixture(t);
+  const config = await loadRoleIdentityConfig(fixture.mappingFile);
+  const mapping = config.mappings[0];
+  const chat = fixture.chatMap.get(mapping.key);
+  const topic = fixture.trustedTopics.get(mapping.key);
+  chat.threadId = "existing-session";
+  const sync = createRoleIdentitySynchronizer({
+    config,
+    chats: fixture.chats,
+    options: fixture.options,
+    getTrustedForumTopic: fixture.getTrustedForumTopic,
+    run: fixture.run,
+  });
+
+  fixture.trustedTopics.delete(mapping.key);
+  await assert.rejects(
+    sync.beforeTurn(mapping.key),
+    /missing, stale, closed or untrusted/,
+  );
+  fixture.trustedTopics.set(mapping.key, topic);
+
+  topic.bindingId = "rebound-binding";
+  await assert.rejects(
+    sync.beforeTurn(mapping.key),
+    /binding is stale or changed/,
+  );
+  topic.bindingId = chat.forumBinding.id;
+
+  topic.cwd = config.mappings[1].workspace;
+  chat.forumBinding.cwd = topic.cwd;
+  await assert.rejects(
+    sync.beforeTurn(mapping.key),
+    /topic workspace does not match/,
+  );
+  topic.cwd = mapping.workspace;
+  chat.forumBinding.cwd = mapping.workspace;
+
+  topic.closed = true;
+  await assert.rejects(
+    sync.beforeTurn(mapping.key),
+    /missing, stale, closed or untrusted/,
+  );
+  topic.closed = false;
+  fixture.changeBindingOnOrigin = true;
+  await assert.rejects(
+    sync.beforeTurn(mapping.key),
+    /binding became stale or changed/,
+  );
+  assert.equal(fixture.instructionReads, 0);
+});
+
+test("v2 fails closed when accepted governance files are absent, symlinked or unreadable", async (t) => {
+  const cases = [
+    { name: "missing AGENTS.md", missing: "AGENTS.md" },
+    { name: "missing role policy", missing: "docs/roles/dev.md" },
+    { name: "symlinked role policy", symlink: "docs/roles/dev.md" },
+    { name: "unreadable accepted instructions", unreadable: true },
+  ];
+  for (const scenario of cases) {
+    await t.test(scenario.name, async (subtest) => {
+      const fixture = await makeV2Fixture(subtest);
+      const config = await loadRoleIdentityConfig(fixture.mappingFile);
+      const mapping = config.mappings[0];
+      fixture.missingTreeFile = scenario.missing || "";
+      fixture.symlinkTreeFile = scenario.symlink || "";
+      fixture.instructionReadFailure = scenario.unreadable === true;
+      const sync = createRoleIdentitySynchronizer({
+        config,
+        chats: fixture.chats,
+        options: fixture.options,
+        getTrustedForumTopic: fixture.getTrustedForumTopic,
+        run: fixture.run,
+      });
+      await assert.rejects(
+        sync.beforeTurn(mapping.key),
+        scenario.unreadable
+          ? /could not verify the trusted repository state/
+          : /governance instructions must be regular files/,
+      );
+      assert.equal(
+        await fs
+          .access(path.join(mapping.workspace, "AGENTS.override.md"))
+          .then(
+            () => true,
+            () => false,
+          ),
+        false,
+      );
+    });
+  }
+});
+
 test("v2 verifies project and workspace even when a Telegram topic has an existing session", async (t) => {
   const fixture = await makeV2Fixture(t);
   const config = await loadRoleIdentityConfig(fixture.mappingFile);
@@ -320,9 +475,10 @@ test("v2 verifies project and workspace even when a Telegram topic has an existi
       config,
       chats: fixture.chats,
       options: fixture.options,
+      getTrustedForumTopic: fixture.getTrustedForumTopic,
       run: fixture.run,
     }).beforeTurn(mapping.key),
-    /workspace does not match/,
+    /binding is stale or changed/,
   );
 });
 
@@ -433,18 +589,37 @@ async function makeV2Fixture(t) {
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const document = makeV2Document(root);
   const chatMap = new Map();
-  for (const project of document.projects) {
-    for (const mapping of project.mappings) {
+  const trustedTopics = new Map();
+  for (const [projectIndex, project] of document.projects.entries()) {
+    for (const [roleIndex, mapping] of project.mappings.entries()) {
       await fs.mkdir(path.join(mapping.workspace, ".git", "info"), {
         recursive: true,
       });
-      const chat = { forumBinding: { cwd: mapping.workspace } };
-      chatMap.set(`${mapping.chatId}:topic:${mapping.topicId}`, chat);
+      const key = `${mapping.chatId}:topic:${mapping.topicId}`;
+      const bindingId = `binding-${projectIndex}-${roleIndex}`;
+      const topic = {
+        id: Number(mapping.topicId),
+        name: `untrusted display title ${roleIndex}`,
+        role: "project",
+        cwd: mapping.workspace,
+        bindingId,
+        closed: false,
+      };
+      chatMap.set(key, {
+        forumBinding: { id: bindingId, cwd: mapping.workspace },
+      });
+      trustedTopics.set(key, topic);
     }
   }
   const mappingFile = path.join(root, "roles.json");
   let wrongOrigin = false;
+  let originFormat = "https";
+  let originOverride = "";
   let wrongSha = false;
+  let missingTreeFile = "";
+  let symlinkTreeFile = "";
+  let instructionReadFailure = false;
+  let changeBindingOnOrigin = false;
   let instructionReads = 0;
   const run = async (command, args, options) => {
     const cwd = options?.cwd || "";
@@ -458,10 +633,22 @@ async function makeV2Fixture(t) {
       .find((item) => item.workspace === cwd);
     if (command !== "git") throw new Error(`Unexpected command: ${command}`);
     if (args[0] === "remote" && args[1] === "get-url") {
+      if (changeBindingOnOrigin && mapping) {
+        trustedTopics.get(
+          `${mapping.chatId}:topic:${mapping.topicId}`,
+        ).bindingId = "changed-during-origin-check";
+        changeBindingOnOrigin = false;
+      }
       return {
-        stdout: wrongOrigin
-          ? `https://github.com/${mapping.project}.evil/`
-          : `https://github.com/${mapping.project}.git`,
+        stdout:
+          originOverride ||
+          (wrongOrigin
+            ? `https://github.com/${mapping.project}.evil/`
+            : originFormat === "scp"
+              ? `git@github.com:${mapping.project}.git`
+              : originFormat === "ssh"
+                ? `ssh://git@github.com/${mapping.project}.git`
+                : `https://github.com/${mapping.project}.git`),
         stderr: "",
       };
     }
@@ -475,6 +662,13 @@ async function makeV2Fixture(t) {
     }
     if (args[0] === "ls-tree") {
       const filePath = args.at(-1);
+      if (filePath === missingTreeFile) return { stdout: "", stderr: "" };
+      if (filePath === symlinkTreeFile) {
+        return {
+          stdout: `120000 blob ${ACCEPTED_SHA}\t${filePath}\n`,
+          stderr: "",
+        };
+      }
       return {
         stdout: `100644 blob ${ACCEPTED_SHA}\t${filePath}\n`,
         stderr: "",
@@ -482,6 +676,7 @@ async function makeV2Fixture(t) {
     }
     if (args[0] === "show") {
       instructionReads++;
+      if (instructionReadFailure) throw new Error("permission denied");
       const revisionPath = args[1].slice(41);
       const common = revisionPath === "AGENTS.md";
       return {
@@ -509,11 +704,50 @@ async function makeV2Fixture(t) {
     },
     run,
     save,
+    getTrustedForumTopic: (chatId, topicId) =>
+      trustedTopics.get(`${chatId}:topic:${topicId}`) || null,
+    trustedTopics,
     get wrongOrigin() {
       return wrongOrigin;
     },
     set wrongOrigin(value) {
       wrongOrigin = value;
+    },
+    get originFormat() {
+      return originFormat;
+    },
+    set originFormat(value) {
+      originFormat = value;
+    },
+    get originOverride() {
+      return originOverride;
+    },
+    set originOverride(value) {
+      originOverride = value;
+    },
+    get missingTreeFile() {
+      return missingTreeFile;
+    },
+    set missingTreeFile(value) {
+      missingTreeFile = value;
+    },
+    get symlinkTreeFile() {
+      return symlinkTreeFile;
+    },
+    set symlinkTreeFile(value) {
+      symlinkTreeFile = value;
+    },
+    get instructionReadFailure() {
+      return instructionReadFailure;
+    },
+    set instructionReadFailure(value) {
+      instructionReadFailure = value;
+    },
+    get changeBindingOnOrigin() {
+      return changeBindingOnOrigin;
+    },
+    set changeBindingOnOrigin(value) {
+      changeBindingOnOrigin = value;
     },
     get wrongSha() {
       return wrongSha;

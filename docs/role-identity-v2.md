@@ -78,6 +78,10 @@ This is a shape example only: use verified IDs, canonical workspace paths, and a
 
 The only role lookup key is the exact numeric `(chatId, topicId)` pair. Topic titles, user messages, role names in prompts, local folder names, and callback text do not select a role. Topic pairs and canonical physical workspaces must be unique across the entire V2 file. A workspace must exist as a directory, be an absolute canonical path, and may not be a symlink alias.
 
+At runtime, V2 resolves that pair to the exact persisted `forum.groups[chatId].topics[topicId]` record and verifies the active bot ID and topic record ID. It requires a project topic that is not marked closed, a current nonempty `bindingId`, equality with `chat.forumBinding.id`, and identical workspace values in the topic, chat binding, options, and role mapping. The binding is rechecked after asynchronous repository/governance operations and before return, including the existing-session path.
+
+Telegram does not provide this code a read-by-ID topic-state query. Closed/stale detection therefore relies on the persisted forum topic record and Telegram service updates received by the bot. A close/delete event that Telegram does not deliver cannot be independently detected in Phase 1; a missing record, observed `closed` state, or changed binding fails closed.
+
 Before V2 instruction loading, runtime checks the persisted Telegram topic binding, configured working directory, canonical workspace, and exact GitHub `origin` repository. A trusted mapping whose workspace or repository differs fails before instruction loading. An unmapped topic in a configured repository fails closed. An unrelated repository remains outside Role Identity.
 
 For a new session, runtime fetches `origin/main` and requires its commit to equal the project's configured `acceptedGovernanceSha`. It reads root `AGENTS.md` and the mapped role policy from that same commit, verifies both are regular Git files, and writes their combined instruction override. If the repository, topic, workspace, revision, common instructions, or role policy cannot be verified, the managed turn is rejected; there is no role fallback.

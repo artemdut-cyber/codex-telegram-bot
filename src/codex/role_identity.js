@@ -192,6 +192,7 @@ export function createRoleIdentitySynchronizer({
   config,
   chats,
   options,
+  getTrustedForumTopic,
   run = execFileAsync,
 }) {
   if (!config?.mappings)
@@ -344,8 +345,64 @@ export function createRoleIdentitySynchronizer({
       }
       return { synchronized: false, reason: "not-managed-project" };
     }
+    if (typeof getTrustedForumTopic !== "function") {
+      throw new Error(
+        "Role identity v2 requires a trusted forum topic resolver.",
+      );
+    }
+    const topic = getTrustedForumTopic(identity.chatId, identity.topicId);
+    if (
+      !topic ||
+      String(topic.id) !== identity.topicId ||
+      topic.role !== "project" ||
+      topic.closed === true ||
+      !topic.bindingId ||
+      !topic.cwd
+    ) {
+      throw new Error(
+        "Role identity v2 Telegram topic is missing, stale, closed or untrusted.",
+      );
+    }
+    const forumBinding = chat?.forumBinding;
+    if (
+      !forumBinding ||
+      forumBinding.id !== topic.bindingId ||
+      forumBinding.cwd !== topic.cwd
+    ) {
+      throw new Error(
+        "Role identity v2 Telegram topic binding is stale or changed.",
+      );
+    }
+    const expectedBindingId = topic.bindingId;
+    const expectedTopicWorkspace = topic.cwd;
+    const assertCurrentTopicBinding = () => {
+      const current = getTrustedForumTopic(identity.chatId, identity.topicId);
+      if (
+        !current ||
+        String(current.id) !== identity.topicId ||
+        current.role !== "project" ||
+        current.closed === true ||
+        current.bindingId !== expectedBindingId ||
+        current.cwd !== expectedTopicWorkspace ||
+        chat?.forumBinding?.id !== expectedBindingId ||
+        chat?.forumBinding?.cwd !== expectedTopicWorkspace
+      ) {
+        throw new Error(
+          "Role identity v2 Telegram topic binding became stale or changed.",
+        );
+      }
+    };
+    if (path.resolve(topic.cwd) !== mapping.workspace) {
+      throw new Error(
+        "Role identity v2 topic workspace does not match its trusted mapping.",
+      );
+    }
     const effectiveCwd = options.get(chatKey).workingDirectory;
-    if (effectiveCwd !== cwd || path.resolve(cwd) !== mapping.workspace) {
+    if (
+      effectiveCwd !== cwd ||
+      cwd !== topic.cwd ||
+      path.resolve(cwd) !== mapping.workspace
+    ) {
       throw new Error(
         "Role identity v2 workspace does not match its trusted topic binding.",
       );
@@ -360,6 +417,7 @@ export function createRoleIdentitySynchronizer({
         "Role identity v2 repository does not match its trusted topic binding.",
       );
     }
+    assertCurrentTopicBinding();
     const threadId =
       chat?.threadId ||
       chat?.accountThreads?.[
@@ -408,6 +466,7 @@ export function createRoleIdentitySynchronizer({
       ["show", `${mapping.acceptedGovernanceSha}:${mapping.rolePolicyPath}`],
       run,
     );
+    assertCurrentTopicBinding();
     const content = composeInstructions({
       common,
       policy,
@@ -432,6 +491,7 @@ export function createRoleIdentitySynchronizer({
     );
     if (statusBefore !== statusAfter)
       throw new Error("Role identity v2 sync changed the worktree Git status.");
+    assertCurrentTopicBinding();
     return {
       synchronized: true,
       project: mapping.project,
@@ -497,18 +557,24 @@ async function originRepository(cwd, run) {
 async function originRepositoryV2(cwd, run) {
   const remote = await git(cwd, ["remote", "get-url", "origin"], run);
   let repositoryPath;
-  if (remote.startsWith("https://")) {
+  if (/^(https|ssh):\/\//i.test(remote)) {
     try {
       const url = new URL(remote);
+      const authority = remote.match(/^[A-Za-z]+:\/\/([^/]+)/)?.[1] || "";
       if (
         url.hostname.toLowerCase() !== "github.com" ||
-        url.username ||
         url.password ||
         url.port ||
         url.search ||
-        url.hash
+        url.hash ||
+        (url.protocol === "https:" &&
+          authority.toLowerCase() !== "github.com") ||
+        (url.protocol === "ssh:" &&
+          authority.toLowerCase() !== "git@github.com")
       )
         return "";
+      if (url.protocol === "https:" && url.username) return "";
+      if (url.protocol === "ssh:" && url.username !== "git") return "";
       repositoryPath = url.pathname.slice(1);
     } catch {
       return "";
