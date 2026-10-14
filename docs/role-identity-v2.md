@@ -1,5 +1,7 @@
 # Role Identity V2: multi-project loader and runtime lookup
 
+> **Repository rename notice (2026-10-14):** EmailAi is one product with a **single canonical GitHub repository**: [`artemdut-cyber/sol_email_ai`](https://github.com/artemdut-cyber/sol_email_ai) (same repository ID `1412898009` as the former `EmailAi` slug; [owning Issue](https://github.com/artemdut-cyber/sol_email_ai/issues/1)). The Phase 1 code allowlist in `src/codex/role_identity.js`, its tests, and the **historical JSON example below still contain the previous slug**. They describe that implementation, **not an approved current deployment configuration**. Do **not** provision EmailAi V2 using either slug until a separately reviewed code/test change aligns the allowlist, repository checks, and canonical origin, followed by Owner-approved activation. No live CODEX_HUB or MyFkenTS settings are changed by this notice. [Migration gate: Issue #7](https://github.com/artemdut-cyber/codex-telegram-bot/issues/7).
+
 V2 lets one bot process hold independent trusted role mappings for multiple approved GitHub repositories. This Phase 1 implementation supports `artemdut-cyber/MyFkenTS` and `artemdut-cyber/EmailAi`. EmailAi mappings are configuration capability only: this change does not install or activate an EmailAi mapping in a live CODEX_HUB.
 
 ## Schema
