@@ -8,6 +8,15 @@ import { createWorkerLogMaintenance } from "./log_retention.js";
 import { runWorkerJob } from "./executor.js";
 import { updateAdmissionPaused } from "../maintenance/update_state.js";
 import {
+  assertPeerCredentialBindingAvailable,
+  authorizeUnixPeer,
+  prepareSlackJobSocket,
+  readUnixPeerCredentials,
+  secureSlackJobSocket,
+  validateSlackJob,
+  validateSlackJobId
+} from "./slack_job_security.js";
+import {
   WORKER_RESTART_FAILURE_MESSAGE,
   WORKER_RESTART_FAILURE_REASON
 } from "./replay.js";
@@ -17,7 +26,10 @@ export function createWorkerServer({
   store = createWorkerStore(config),
   executeJob = runWorkerJob,
   logger = console,
-  heartbeatMs = 30_000
+  heartbeatMs = 30_000,
+  getPeerCredentials = readUnixPeerCredentials,
+  platform = process.platform,
+  slackSocketPathOverride
 } = {}) {
   if (!config) throw new Error("config is required.");
   const controllers = new Map();
@@ -29,15 +41,53 @@ export function createWorkerServer({
   let maintenanceTimer;
   let maintenanceStart;
   let maintenanceTask;
+  let slackServer;
+  let slackSocketPath;
+  let slackWorkspacePath;
   const archiveLogs = () => {
     maintenanceTask = maintenance.run({ apply: true }).catch((error) => {
       logger.warn?.("worker log archival skipped:", error instanceof Error ? error.message : String(error));
     });
   };
 
-  async function dispatch(request) {
+  async function dispatch(request, isSlackJobSocket = false) {
     const method = request?.method || "";
     const params = request?.params || {};
+    if (isSlackJobSocket) {
+      if (!["worker/status", "job/start", "job/status", "job/events"].includes(method)) {
+        throw new Error(`Method is not available on the Slack job socket: ${method}`);
+      }
+      if (method === "worker/status") {
+        const active = await store.readActiveJobs();
+        return {
+          status: "ok",
+          activeJobs: Object.keys(active.jobs).length ? [{ status: "running" }] : []
+        };
+      }
+      if (method === "job/start") {
+        if (admissionError) throw admissionError;
+        if (updateAdmissionPaused(config)) throw new Error("Codex update is waiting for idle; new jobs are paused.");
+        const job = params?.job;
+        validateSlackJob(job, { workspacePath: slackWorkspacePath });
+        return store.withAdmissionLock(() => {
+          if (admissionError) throw admissionError;
+          return startJob({
+            config, store, controllers, chatReservations, codexClients, jobTasks, executeJob, logger,
+            heartbeatMs, job: { ...job, slackJobV1: true }, onAdmissionFailure: (error) => { admissionError = error; }
+          });
+        });
+      }
+      const jobId = validateSlackJobId(params?.jobId);
+      const job = await store.readJobState(jobId);
+      if (!job || job.slackJobV1 !== true) throw new Error("Slack job is not authorized or does not exist.");
+      if (method === "job/status") return { job: slackJobStatus(job) };
+      return {
+        events: (await store.readJobEvents(jobId, {
+          afterSeq: safeSequence(params.afterSeq),
+          limit: safeEventLimit(params.limit)
+        })).map(slackJobEvent)
+      };
+    }
     if (method === "worker/archive") return maintenance.run(params);
     if (method === "job/delivered") return store.confirmDelivery(params.entry);
     if (method === "worker/status") {
@@ -50,6 +100,9 @@ export function createWorkerServer({
     if (method === "job/start") {
       if (admissionError) throw admissionError;
       if (updateAdmissionPaused(config)) throw new Error("Codex update is waiting for idle; new jobs are paused.");
+      if (params?.job && Object.hasOwn(params.job, "slackJobV1")) {
+        throw new Error("slackJobV1 is a reserved worker-owned field.");
+      }
       return store.withAdmissionLock(() => {
         if (admissionError) throw admissionError;
         return startJob({ config, store, controllers, chatReservations, codexClients, jobTasks, executeJob, logger, heartbeatMs, job: params.job, onAdmissionFailure: (error) => { admissionError = error; } });
@@ -58,7 +111,17 @@ export function createWorkerServer({
     throw new Error(`Unknown worker method: ${method}`);
   }
 
-  const server = net.createServer((socket) => {
+  function handleConnection(socket, isSlackJobSocket = false) {
+    if (isSlackJobSocket) {
+      try {
+        if (platform !== "linux") throw new Error("The Slack job socket requires Linux SO_PEERCRED.");
+        authorizeUnixPeer(getPeerCredentials(socket), config.codexSlackJobUid);
+      } catch (error) {
+        logger.warn?.("rejected Slack worker socket peer:", error instanceof Error ? error.message : String(error));
+        socket.destroy();
+        return;
+      }
+    }
     socket.on("error", (error) => {
       if (error?.code === "ECONNRESET" || error?.code === "EPIPE") return;
       logger.warn?.("worker client socket failed:", error instanceof Error ? error.message : String(error));
@@ -69,7 +132,7 @@ export function createWorkerServer({
     createFrameReader(socket, async (request) => {
       const id = request?.id || null;
       try {
-        const result = await dispatch(request);
+        const result = await dispatch(request, isSlackJobSocket);
         writeResponse(okResponse(id, result));
       } catch (error) {
         writeResponse(errorResponse(id, error));
@@ -79,7 +142,9 @@ export function createWorkerServer({
         writeResponse(errorResponse(null, error));
       }
     });
-  });
+  }
+
+  const server = net.createServer((socket) => handleConnection(socket));
 
   return {
     server,
@@ -96,6 +161,33 @@ export function createWorkerServer({
         });
       });
       await fs.chmod(config.codexWorkerSocket, PRIVATE_FILE_MODE);
+      if (config.codexSlackJobSocket) {
+        try {
+          if (platform !== "linux") throw new Error("CODEX_SLACK_JOB_SOCKET is supported only on Linux.");
+          if (getPeerCredentials === readUnixPeerCredentials) assertPeerCredentialBindingAvailable();
+          const prepared = await prepareSlackJobSocket(config, {
+            socketPath: slackSocketPathOverride || config.codexSlackJobSocket
+          });
+          slackSocketPath = prepared.socketPath;
+          slackWorkspacePath = prepared.workspacePath;
+          slackServer = net.createServer((socket) => handleConnection(socket, true));
+          await new Promise((resolve, reject) => {
+            slackServer.once("error", reject);
+            slackServer.listen({ path: slackSocketPath, readableAll: false, writableAll: false }, () => {
+              slackServer.off("error", reject);
+              resolve();
+            });
+          });
+          await secureSlackJobSocket(slackSocketPath, config.codexSlackJobGid);
+        } catch (error) {
+          if (slackServer) await new Promise((resolve) => slackServer.close(resolve)).catch(() => {});
+          if (slackSocketPath) await fs.rm(slackSocketPath, { force: true }).catch(() => {});
+          slackServer = undefined;
+          await new Promise((resolve) => server.close(resolve));
+          await fs.rm(config.codexWorkerSocket, { force: true }).catch(() => {});
+          throw error;
+        }
+      }
       if (config.codexWorkerLogRetentionDays > 0) {
         maintenanceStart = setTimeout(archiveLogs, 60_000);
         maintenanceTimer = setInterval(archiveLogs, 3_600_000);
@@ -107,6 +199,7 @@ export function createWorkerServer({
       clearTimeout(maintenanceStart);
       clearInterval(maintenanceTimer);
       await maintenanceTask;
+      if (slackServer) await new Promise((resolve) => slackServer.close(resolve));
       await new Promise((resolve) => server.close(resolve));
       for (const [jobId, controller] of controllers.entries()) {
         await store.appendJobEvent(jobId, {
@@ -117,6 +210,7 @@ export function createWorkerServer({
         controller.abort(new Error("worker shutdown"));
       }
       await Promise.allSettled([...jobTasks.values()]);
+      if (slackSocketPath) await fs.rm(slackSocketPath, { force: true }).catch(() => {});
       await fs.rm(config.codexWorkerSocket, { force: true }).catch(() => {});
     }
   };
@@ -307,4 +401,52 @@ async function cancelJob(store, controllers, jobId) {
 
 function isTerminalWorkerStatus(status) {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function slackJobStatus(job) {
+  return {
+    id: job.id,
+    status: job.status,
+    acceptedAt: job.acceptedAt || "",
+    updatedAt: job.updatedAt || "",
+    startedAt: job.startedAt || "",
+    completedAt: job.completedAt || "",
+    lastSeq: Number.isSafeInteger(job.lastSeq) ? job.lastSeq : 0
+  };
+}
+
+function slackJobEvent(event) {
+  const text = collectSlackEventText(event, "event");
+  return {
+    seq: event.seq,
+    type: event.type,
+    status: event.status,
+    ...(text ? { text } : {})
+  };
+}
+
+function collectSlackEventText(value, key) {
+  const contentKeys = new Set(["content", "delta", "text", "output", "finalResponse", "item"]);
+  if (typeof value === "string") return contentKeys.has(key) ? value : "";
+  if (Array.isArray(value)) return value.map((item) => collectSlackEventText(item, key)).filter(Boolean).join("\n");
+  if (!value || typeof value !== "object") return "";
+  return Object.entries(value)
+    .filter(([childKey]) => contentKeys.has(childKey))
+    .map(([childKey, child]) => collectSlackEventText(child, childKey))
+    .filter(Boolean)
+    .join("\n");
+}
+
+function safeSequence(value) {
+  if (value === undefined) return 0;
+  if (!Number.isSafeInteger(value) || value < 0) throw new Error("job/events afterSeq must be a nonnegative integer.");
+  return value;
+}
+
+function safeEventLimit(value) {
+  if (value === undefined) return 500;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 500) {
+    throw new Error("job/events limit must be between 1 and 500.");
+  }
+  return value;
 }
